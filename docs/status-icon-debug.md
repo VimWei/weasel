@@ -191,11 +191,18 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
 
 ## 解决方向（更新版）
 
-### 方向 A：AppIME 写 TSF compartment（必须）
+### 方向 A：im-control 写 TSF compartment（关键是一致性）
 
-让 AppIME 在调用 `WeaselServer.exe /ascii` 后，主动调用 TSF API 写入 `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`。
+调研发现 im-control 已经通过 DLL 注入 + `SetWindowsHookEx` 在目标进程内直接调用 `ITfCompartment::SetValue(GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION, ...)`，**不调用 `WeaselServer.exe /ascii`**。
 
-这一步是**必要条件**——没有 OnChange 触发，WeaselTSF 永远不知道状态变了。
+所以 OnChange 应该已经触发了。如果 Steps 1+2 后 OS 指示器仍不正确，问题可能是：
+1. **im-control 写入的 compartment 值与 RIME 引擎状态不一致**（写入 compartment 但没通知 RIME）
+2. **TSF 的 `SetValue` 在 hook 上下文中触发 OnChange 不可靠**
+3. **`TfClientId` 不正确导致 compartment 写入不生效**
+
+**可能的修复路径**：
+- 在 im-control 写完 compartment 后额外调用 `WeaselServer.exe /ascii` 同步 RIME（补偿写入路径）
+- 或者反过来：保留 `WeaselServer.exe /ascii` 调用，去掉 im-control 的 compartment 写入，让 WeaselTSF 的 Steps 1+2 来写 compartment
 
 ### 方向 B：轮询 —— 已放弃
 
@@ -238,20 +245,24 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
 
 **目标**：确保 AppIME 写 compartment 后（方向 A 实现时），OnChange 内触发的 compartment 写入可靠执行。
 
-### Step 3：AppIME 写 compartment（方向 A）
+### Step 3：im-control 同步调优（方向 A）
 
-在 `AppIME.ahk` 的切换逻辑中，在 `WeaselServer.exe /ascii` 之后添加 TSF API 调用，写入 `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`。
+先测试 Steps 1+2 的效果：如果 im-control 的 compartment 写入已经能触发正确的 OS 指示器更新，则 Step 3 只需确保 RIME 引擎与 compartment 一致。
 
-**目标**：让 OnChange 触发，Steps 1+2 才有机会执行。
+如果 OS 指示器仍然错误，两种修法：
+- **修 im-control**：写入 compartment 后额外调用 `WeaselServer.exe /ascii` 同步 RIME
+- **修 WeaselTSF**：在 `_HandleCompartment` 中依赖 RIME 响应来确认写入（Steps 1+2 已实现）
+
+在 `C:\Apps\git-kb\repos\VimWei\im-control\injector\hook.cpp` 中确认 compartment 写入逻辑的 `TfClientId` 和 `TF_GetThreadMgr` 用法是否正确。
 
 ### 预期效果
 
-| 场景 | 当前状态 | Step 1 后 | Step 1+2 后 | Step 1+2+3 后 |
-|------|---------|-----------|-------------|---------------|
-| gvim Win10 | ✅ | ✅ | ✅ | ✅ |
-| gvim Win11 | ⚠️ 时而正确 | ✅ 稳定正确 | ✅ 稳定正确 | ✅ 稳定正确 |
-| AppIME Win10 | ❌ "中" | ❌ "中" | ❌ "中"（OnChange 不触发） | ✅ |
-| AppIME Win11 | ❌ "中" | ❌ "中" | ❌ "中"（OnChange 不触发） | ✅ |
+| 场景 | Step 1+2 后（当前） | Step 3 后 |
+|------|-------------------|-----------|
+| gvim Win10 | ✅ | ✅ |
+| gvim Win11 | ✅ 不再"时而正确" | ✅ |
+| AppIME Win10 | ❓ 待测试（im-control 已写 compartment，但同步可能有问题） | ✅ |
+| AppIME Win11 | ❓ 待测试（同上） | ✅ |
 
 ## 测试记录
 
