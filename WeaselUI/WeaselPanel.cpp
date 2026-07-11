@@ -183,7 +183,7 @@ void WeaselPanel::Refresh() {
       RedrawWindow();
     }
   }
-  }
+
 }
 
 void WeaselPanel::_InitFontRes(bool forced) {

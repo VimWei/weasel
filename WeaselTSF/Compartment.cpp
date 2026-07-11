@@ -286,7 +286,8 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
                                    : ID_WEASELTRAY_DISABLE_ASCII);
       if (_pEditSessionContext)
         m_client.ClearComposition();
-      _UpdateLanguageBar(_status);
+      if (_pLangBarButton)
+        _pLangBarButton->UpdateWeaselStatus(_status);
       _cand->RefreshStatus(_status);
     } else {
       if (_isToOpenClose && !_IsKeyboardOpen()) {
@@ -294,7 +295,6 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
         if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
           _EnableLanguageBar(true);
       }
-      _UpdateLanguageBar(_status);
     }
   }
   return S_OK;
