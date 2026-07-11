@@ -207,6 +207,7 @@ HRESULT WeaselTSF::_SetCompartmentDWORD(const DWORD& value, const GUID guid) {
       var.vt = VT_I4;
       var.lVal = value;
       hr = pCompartment->SetValue(_tfClientId, &var);
+      OutputDebugStringA(("_SetCompartmentDWORD: SetValue hr=0x" + std::to_string(hr) + " clientId=" + std::to_string(_tfClientId) + "\n").c_str());
     }
     pCompartment->Release();
   }
