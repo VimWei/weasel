@@ -180,6 +180,7 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
   RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
                     L"ToggleImeOnOpenClose", _ToggleImeOnOpenClose);
   _isToOpenClose = (_ToggleImeOnOpenClose == L"yes");
+  _ReconcileCompartment();
   if (m_client.Echo()) {
     m_client.ProcessKeyEvent(0);
     weasel::ResponseParser parser(NULL, NULL, &_status, NULL, &_cand->style());
