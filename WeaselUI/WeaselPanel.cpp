@@ -27,14 +27,18 @@
 
 template <class t0, class t1, class t2>
 inline void LoadIconNecessary(t0& a, t1& b, t2& c, int d) {
-  if (a == b)
+  if (a == b) {
     return;
+  }
   a = b;
-  if (b.empty())
+  if (b.empty()) {
+    OutputDebugStringA(("LoadIconNecessary: loading default icon, d=" + std::to_string(d) + "\n").c_str());
     c.LoadIconW(d, STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_DEFAULTCOLOR);
-  else
+  } else {
+    OutputDebugStringW((L"LoadIconNecessary: loading custom icon, b=" + std::wstring(b.c_str()) + L"\n").c_str());
     c = (HICON)LoadImage(NULL, b.c_str(), IMAGE_ICON, STATUS_ICON_SIZE,
-                         STATUS_ICON_SIZE, LR_LOADFROMFILE);
+                          STATUS_ICON_SIZE, LR_LOADFROMFILE);
+  }
 }
 
 static inline void ReconfigRoundInfo(IsToRoundStruct& rd,
@@ -68,12 +72,14 @@ WeaselPanel::WeaselPanel(weasel::UI& ui)
       pDWR(ui.pdwr()),
       _UICallback(ui.uiCallback()),
       _m_gdiplusToken(0) {
+  OutputDebugStringA("WeaselPanel constructor: loading icons\n");
   m_iconDisabled.LoadIconW(IDI_RELOAD, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
                            LR_DEFAULTCOLOR);
   m_iconEnabled.LoadIconW(IDI_ZH, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
                           LR_DEFAULTCOLOR);
   m_iconAlpha.LoadIconW(IDI_EN, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
                         LR_DEFAULTCOLOR);
+  OutputDebugStringA(("WeaselPanel constructor: m_iconAlpha loaded, IDI_EN=" + std::to_string(IDI_EN) + "\n").c_str());
   m_iconFull.LoadIconW(IDI_FULL_SHAPE, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
                        LR_DEFAULTCOLOR);
   m_iconHalf.LoadIconW(IDI_HALF_SHAPE, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
@@ -1116,6 +1122,7 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
               : (m_status.type == SCHEMA
                      ? m_iconEnabled
                      : (m_status.full_shape ? m_iconFull : m_iconHalf)));
+      OutputDebugStringA(("[12] DrawIcon: m_iconAlpha=" + std::to_string((uint64_t)(HICON)m_iconAlpha) + ", m_iconEnabled=" + std::to_string((uint64_t)(HICON)m_iconEnabled) + "\n").c_str());
       OutputDebugStringA(m_status.ascii_mode ? "[12] WeaselPanel::DrawIcon: m_status.ascii_mode=true -> m_iconAlpha\n" : "[12] WeaselPanel::DrawIcon: m_status.ascii_mode=false\n");
       memDC.DrawIconEx(iconRect.left, iconRect.top, icon, 0, 0);
       drawn = true;
