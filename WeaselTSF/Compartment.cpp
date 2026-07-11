@@ -293,16 +293,14 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
         m_client.ClearComposition();
       OutputDebugStringA("[4] _HandleCompartment: calling _UpdateLanguageBar\n");
       _UpdateLanguageBar(_status);
-      OutputDebugStringA("[5] _HandleCompartment: calling _cand->UpdateUI\n");
-      _cand->UpdateUI(weasel::Context(), _status);
-      OutputDebugStringA("[6] _HandleCompartment: _cand->UpdateUI completed\n");
     } else {
-      OutputDebugStringA("[X] _HandleCompartment: skipped (same ascii_mode)\n");
+      OutputDebugStringA("[X] _HandleCompartment: force-sync compartment bits\n");
       if (_isToOpenClose && !_IsKeyboardOpen()) {
         _SetKeyboardOpen(true);
         if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
           _EnableLanguageBar(true);
       }
+      _UpdateLanguageBar(_status);
     }
   }
   return S_OK;

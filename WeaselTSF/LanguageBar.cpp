@@ -400,8 +400,6 @@ void WeaselTSF::_UninitLanguageBar() {
 }
 
 void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
-  if (!_pLangBarButton)
-    return;
   DWORD flags;
   _GetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   if (stat.ascii_mode)
@@ -416,7 +414,8 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
   _SetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   _updatingLanguageBar = false;
 
-  _pLangBarButton->UpdateWeaselStatus(stat);
+  if (_pLangBarButton)
+    _pLangBarButton->UpdateWeaselStatus(stat);
 }
 
 void WeaselTSF::_ShowLanguageBar(BOOL show) {
