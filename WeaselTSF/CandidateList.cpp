@@ -4,6 +4,7 @@
 #include "CandidateList.h"
 #include <KeyEvent.h>
 #include <math.h>
+#include <atlstr.h>
 
 using namespace std;
 using namespace weasel;
@@ -199,6 +200,7 @@ STDMETHODIMP CCandidateList::FinalizeExactCompositionString() {
 }
 
 void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
+  OutputDebugStringA(status.ascii_mode ? "CCandidateList::UpdateUI: ascii_mode=true\n" : "CCandidateList::UpdateUI: ascii_mode=false\n");
   if (_ui->style().inline_preedit) {
     _ui->style().client_caps |= weasel::INLINE_PREEDIT_CAPABLE;
   } else {

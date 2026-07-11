@@ -133,6 +133,7 @@ void WeaselPanel::_CreateLayout() {
 
 // 更新界面
 void WeaselPanel::Refresh() {
+  OutputDebugStringA(m_status.ascii_mode ? "WeaselPanel::Refresh: m_status.ascii_mode=true\n" : "WeaselPanel::Refresh: m_status.ascii_mode=false\n");
   bool should_show_icon =
       (m_status.ascii_mode || !m_status.composing || !m_ctx.aux.empty());
   m_candidateCount = min(m_ctx.cinfo.candies.size(), MAX_CANDIDATES_COUNT);
@@ -173,10 +174,21 @@ void WeaselPanel::Refresh() {
     ReleaseDC(dc);
     _ResizeWindow();
     _RepositionWindow();
-    if (m_ctx != m_octx) {
+    bool ctx_changed = (m_ctx != m_octx);
+    bool status_changed = (m_status != m_ostatus);
+    OutputDebugStringA(ctx_changed ? "[7] WeaselPanel::Refresh: ctx_changed=true\n" : "[7] WeaselPanel::Refresh: ctx_changed=false\n");
+    OutputDebugStringA(status_changed ? "[8] WeaselPanel::Refresh: status_changed=true\n" : "[8] WeaselPanel::Refresh: status_changed=false\n");
+    if (ctx_changed || status_changed) {
       m_octx = m_ctx;
+      m_ostatus = m_status;
+      OutputDebugStringA("[9] WeaselPanel::Refresh: calling RedrawWindow\n");
       RedrawWindow();
+      OutputDebugStringA("[10] WeaselPanel::Refresh: RedrawWindow completed\n");
+    } else {
+      OutputDebugStringA("[X] WeaselPanel::Refresh: skipped RedrawWindow (no change)\n");
     }
+  } else {
+    OutputDebugStringA("[X] WeaselPanel::Refresh: skipped (hide_candidates)\n");
   }
 }
 
@@ -1079,6 +1091,7 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
     // end texts drawing
 
     // status icon (I guess Metro IME stole my idea :)
+    OutputDebugStringA(m_layout->ShouldDisplayStatusIcon() ? "[11] WeaselPanel::DrawIcon: ShouldDisplayStatusIcon=true\n" : "[11] WeaselPanel::DrawIcon: ShouldDisplayStatusIcon=false\n");
     if (m_layout->ShouldDisplayStatusIcon()) {
       // decide if custom schema zhung icon to show
       LoadIconNecessary(m_current_zhung_icon, m_style.current_zhung_icon,
@@ -1103,6 +1116,7 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
               : (m_status.type == SCHEMA
                      ? m_iconEnabled
                      : (m_status.full_shape ? m_iconFull : m_iconHalf)));
+      OutputDebugStringA(m_status.ascii_mode ? "[12] WeaselPanel::DrawIcon: m_status.ascii_mode=true -> m_iconAlpha\n" : "[12] WeaselPanel::DrawIcon: m_status.ascii_mode=false\n");
       memDC.DrawIconEx(iconRect.left, iconRect.top, icon, 0, 0);
       drawn = true;
     }

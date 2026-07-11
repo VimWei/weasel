@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include <WeaselUI.h>
 #include "WeaselPanel.h"
+#include <atlstr.h>
 
 using namespace weasel;
 
@@ -11,14 +12,18 @@ class weasel::UIImpl {
   UIImpl(weasel::UI& ui) : panel(ui), shown(false) {}
   ~UIImpl() {}
   void Refresh() {
-    if (!panel.IsWindow())
+    OutputDebugStringA("UIImpl::Refresh: called\n");
+    if (!panel.IsWindow()) {
+      OutputDebugStringA("UIImpl::Refresh: skipped (panel not window)\n");
       return;
+    }
     if (timer) {
       Hide();
       KillTimer(panel.m_hWnd, AUTOHIDE_TIMER);
       timer = 0;
     }
     panel.Refresh();
+    OutputDebugStringA("UIImpl::Refresh: panel.Refresh() completed\n");
   }
   void Show();
   void Hide();
@@ -162,8 +167,11 @@ void UI::UpdateInputPosition(RECT const& rc) {
 }
 
 void UI::Update(const Context& ctx, const Status& status) {
-  if (ctx_ == ctx && status_ == status)
+  OutputDebugStringA(status.ascii_mode ? "UI::Update: ascii_mode=true\n" : "UI::Update: ascii_mode=false\n");
+  if (ctx_ == ctx && status_ == status) {
+    OutputDebugStringA("UI::Update: skipped (same status)\n");
     return;
+  }
   ctx_ = ctx;
   status_ = status;
   if (style_.candidate_abbreviate_length > 0) {

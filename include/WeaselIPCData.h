@@ -163,12 +163,13 @@ struct Status {
     full_shape = false;
     type = SCHEMA;
   }
-  bool operator==(const Status status) {
+  bool operator==(const Status status) const {
     return (status.schema_name == schema_name &&
             status.schema_id == schema_id && status.ascii_mode == ascii_mode &&
             status.composing == composing && status.disabled == disabled &&
             status.full_shape == full_shape && status.type == type);
   }
+  bool operator!=(const Status status) const { return !(*this == status); }
   // 輸入方案
   std::wstring schema_name;
   // 輸入方案 id

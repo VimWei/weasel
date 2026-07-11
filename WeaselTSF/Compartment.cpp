@@ -6,6 +6,7 @@
 #include "ResponseParser.h"
 #include "CandidateList.h"
 #include "LanguageBar.h"
+#include <atlstr.h>
 
 STDAPI CCompartmentEventSink::QueryInterface(REFIID riid,
                                              _Outptr_ void** ppvObj) {
@@ -267,26 +268,36 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
   } else if (IsEqualGUID(guidCompartment,
                          GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION)) {
     if (_updatingLanguageBar) {
+      OutputDebugStringA("[1] _HandleCompartment: skipped (_updatingLanguageBar)\n");
       return S_OK;
     }
     DWORD convMode = 0;
     _GetCompartmentDWORD(convMode,
                          GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
     bool desiredAsciiMode = !(convMode & TF_CONVERSIONMODE_NATIVE);
+    OutputDebugStringA(desiredAsciiMode ? "[1] _HandleCompartment: desiredAsciiMode=true\n" : "[1] _HandleCompartment: desiredAsciiMode=false\n");
+    OutputDebugStringA(_status.ascii_mode ? "[1] _HandleCompartment: _status.ascii_mode=true\n" : "[1] _HandleCompartment: _status.ascii_mode=false\n");
     if (desiredAsciiMode != _status.ascii_mode) {
       _status.ascii_mode = desiredAsciiMode;
+      OutputDebugStringA("[2] _HandleCompartment: _status.ascii_mode updated\n");
       if (_isToOpenClose && !_IsKeyboardOpen()) {
         _SetKeyboardOpen(true);
       }
       if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
         _EnableLanguageBar(true);
+      OutputDebugStringA("[3] _HandleCompartment: calling _HandleLangBarMenuSelect\n");
       _HandleLangBarMenuSelect(_status.ascii_mode
                                    ? ID_WEASELTRAY_ENABLE_ASCII
                                    : ID_WEASELTRAY_DISABLE_ASCII);
       if (_pEditSessionContext)
         m_client.ClearComposition();
+      OutputDebugStringA("[4] _HandleCompartment: calling _UpdateLanguageBar\n");
       _UpdateLanguageBar(_status);
+      OutputDebugStringA("[5] _HandleCompartment: calling _cand->UpdateUI\n");
+      _cand->UpdateUI(weasel::Context(), _status);
+      OutputDebugStringA("[6] _HandleCompartment: _cand->UpdateUI completed\n");
     } else {
+      OutputDebugStringA("[X] _HandleCompartment: skipped (same ascii_mode)\n");
       if (_isToOpenClose && !_IsKeyboardOpen()) {
         _SetKeyboardOpen(true);
         if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())

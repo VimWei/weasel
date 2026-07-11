@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "StandardLayout.h"
+#include <atlstr.h>
 
 using namespace weasel;
 
@@ -389,9 +390,12 @@ bool StandardLayout::ShouldDisplayStatusIcon() const {
   // rule 2. show status icon when switching mode
   // rule 3. always show status icon with tips
   // rule 4. rule 3 excluding tips FullScreenLayout with strings
-  return ((_status.ascii_mode && !_style.inline_preedit) ||
+  bool result = ((_status.ascii_mode && !_style.inline_preedit) ||
           !_status.composing || !_context.aux.empty()) &&
          !((_style.layout_type == UIStyle::LAYOUT_HORIZONTAL_FULLSCREEN ||
             _style.layout_type == UIStyle::LAYOUT_VERTICAL_FULLSCREEN) &&
            !_context.aux.empty());
+  OutputDebugStringA(_status.ascii_mode ? "ShouldDisplayStatusIcon: _status.ascii_mode=true\n" : "ShouldDisplayStatusIcon: _status.ascii_mode=false\n");
+  OutputDebugStringA(result ? "ShouldDisplayStatusIcon: result=true\n" : "ShouldDisplayStatusIcon: result=false\n");
+  return result;
 }
