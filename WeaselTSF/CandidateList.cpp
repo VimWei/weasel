@@ -210,9 +210,12 @@ void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
   /// In UWP, candidate window will only be shown
   /// if it is owned by active view window
   //_UpdateOwner();
-  // 确保 UI 面板已创建（切换输入法模式时可能还没有创建）
-  _MakeUIWindow();
+  // 先更新状态
   _ui->Update(ctx, status);
+  // 再创建面板（确保 m_status 引用的是最新状态）
+  _MakeUIWindow();
+  // 刷新面板
+  _ui->Refresh();
   _UpdateUIElement();
 
   if (status.composing)
