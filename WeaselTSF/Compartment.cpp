@@ -293,6 +293,7 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
         m_client.ClearComposition();
       OutputDebugStringA("[4] _HandleCompartment: calling _UpdateLanguageBar\n");
       _UpdateLanguageBar(_status);
+      _cand->RefreshStatus(_status);
     } else {
       OutputDebugStringA("[X] _HandleCompartment: force-sync compartment bits\n");
       if (_isToOpenClose && !_IsKeyboardOpen()) {

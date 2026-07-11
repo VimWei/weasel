@@ -199,6 +199,14 @@ STDMETHODIMP CCandidateList::FinalizeExactCompositionString() {
   return E_NOTIMPL;
 }
 
+void CCandidateList::RefreshStatus(const Status& status) {
+  if (!_ui->IsShown())
+    return;
+  _ui->Update(_ui->ctx(), status);
+  _ui->Refresh();
+  _UpdateUIElement();
+}
+
 void CCandidateList::UpdateUI(const Context& ctx, const Status& status) {
   OutputDebugStringA(status.ascii_mode ? "CCandidateList::UpdateUI: ascii_mode=true\n" : "CCandidateList::UpdateUI: ascii_mode=false\n");
   if (_ui->style().inline_preedit) {
