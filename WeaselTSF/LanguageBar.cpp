@@ -406,6 +406,7 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
     flags &= (~TF_CONVERSIONMODE_NATIVE);
   else
     flags |= TF_CONVERSIONMODE_NATIVE;
+  OutputDebugStringA(("_UpdateLanguageBar: ascii_mode=" + std::to_string(stat.ascii_mode) + " flags=0x" + std::to_string(flags) + "\n").c_str());
   if (stat.full_shape)
     flags |= TF_CONVERSIONMODE_FULLSHAPE;
   else

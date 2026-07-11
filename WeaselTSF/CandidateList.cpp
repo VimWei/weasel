@@ -200,8 +200,12 @@ STDMETHODIMP CCandidateList::FinalizeExactCompositionString() {
 }
 
 void CCandidateList::RefreshStatus(const Status& status) {
-  if (!_ui->IsShown())
+  OutputDebugStringA(status.ascii_mode ? "RefreshStatus: ascii_mode=true\n" : "RefreshStatus: ascii_mode=false\n");
+  if (!_ui->IsShown()) {
+    OutputDebugStringA("RefreshStatus: panel not shown, skipping\n");
     return;
+  }
+  OutputDebugStringA("RefreshStatus: updating panel\n");
   _ui->Update(_ui->ctx(), status);
   _ui->Refresh();
   _UpdateUIElement();
