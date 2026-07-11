@@ -183,10 +183,9 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
   if (m_client.Echo()) {
     m_client.ProcessKeyEvent(0);
     weasel::ResponseParser parser(NULL, NULL, &_status, NULL, &_cand->style());
-    bool ok = m_client.GetResponseData(std::ref(parser));
-    if (ok)
-      _UpdateLanguageBar(_status);
+    m_client.GetResponseData(std::ref(parser));
   }
+  _UpdateLanguageBar(_status);
   return S_OK;
 }
 STDMETHODIMP WeaselTSF::OnKillThreadFocus() {

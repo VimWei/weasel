@@ -184,6 +184,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   void _DeleteCandidateList();
 
+  friend class CUpdateLangBarEditSession;
   BOOL _InitCompartment();
   void _UninitCompartment();
   HRESULT _HandleCompartment(REFGUID guidCompartment);

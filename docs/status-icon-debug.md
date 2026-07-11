@@ -2,11 +2,25 @@
 
 ## 问题描述
 
-使用 im-control 控制 RIME/weasel 输入法的中英文状态时，出现以下问题：
+使用 im-control 控制 RIME/weasel 输入法的中英文状态时，右下角 OS 指示器图标显示不正确。
 
-1. **VimReader + Windows Terminal**：手动切换到中文状态，等待8秒后 AppIME 自动切换到英文，右下角托盘图标显示正确（"A"），但光标位置的 WeaselPanel 图标显示"中"
+### 涉及场景
 
-2. **gvim**：使用 i 和 esc 切换模式，win 11 光标位置的图标显示不正确，而win 10 图标是正确的。
+1. **AppIME**（VimReader/Windows Terminal）：自动切换中英文后，OS 指示器显示"中"而非"A"（Win10/Win11 均出错）
+2. **gvim**（Win11）：i/esc 切换模式后，OS 指示器时而正确时而错误
+3. **gvim**（Win10）：始终正常
+
+### 判断标准：哪个图标？
+
+存在三个层级的状态图标，必须区分：
+
+| 层级 | 位置 | 控制者 | 状态 |
+|------|------|--------|------|
+| **RIME 引擎** | 右下角通知区域托盘图标 | WeaselServer 读取 RIME 内部状态 | ✅ 始终正确 |
+| **TSF Compartment** | OS 输入法指示器（任务栏"中"/"A"） | `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION` 的 `TF_CONVERSIONMODE_NATIVE` 位 | ❌ AppIME 场景错误 |
+| **WeaselPanel** | 光标位置候选窗口上的状态图标 | WeaselTSF UI 组件 | 已被移除（不再自行弹图标） |
+
+> 注意：WeaselServer 托盘图标显示的是 RIME 引擎状态，OS 指示器显示的是 TSF compartment 状态，两者可能不一致。
 
 ## 相关仓库
 
@@ -15,122 +29,243 @@
 - `c:\Apps\VimReader\lib\system\AppIME.ahk` - AppIME 自动切换
 - `c:\Apps\vim-init\pack\mydev\opt\vim-im-select\` - vim 输入法切换插件
 
-## 调查发现
+## 架构分析
 
-### 1. WeaselServer 状态正确
-
-右下角托盘图标显示正确（"A"），说明 WeaselServer 的 RIME 引擎状态是正确的。
-
-### 2. WeaselTSF 状态更新链完整
-
-通过 DebugView 调试输出，确认整个更新链都正确执行：
+### 手动 Shift 切换（正常工作的路径）
 
 ```
-[1] _HandleCompartment: desiredAsciiMode=true
-[1] _HandleCompartment: _status.ascii_mode=false
-[2] _HandleCompartment: _status.ascii_mode updated
-[3] _HandleCompartment: calling _HandleLangBarMenuSelect
-[4] _HandleCompartment: calling _UpdateLanguageBar
-[5] _HandleCompartment: calling _cand->UpdateUI
-CCandidateList::UpdateUI: ascii_mode=true
-UI::Update: ascii_mode=true
-UIImpl::Refresh: called
-WeaselPanel::Refresh: m_status.ascii_mode=true
-[7] WeaselPanel::Refresh: ctx_changed=false
-[8] WeaselPanel::Refresh: status_changed=true
-[9] WeaselPanel::Refresh: calling RedrawWindow
-[11] WeaselPanel::DrawIcon: ShouldDisplayStatusIcon=true
-[12] WeaselPanel::DrawIcon: m_status.ascii_mode=true -> m_iconAlpha
-[10] WeaselPanel::Refresh: RedrawWindow completed
-[6] _HandleCompartment: _cand->UpdateUI completed
+用户按 Shift
+  → OnKeyDown → ProcessKeyEvent → 发送 WEASEL_IPC_PROCESS_KEY_EVENT 到服务器
+  → RIME 切换 ascii_mode，发送响应
+  → DoEditSession (ITfEditSession)
+    → m_client.GetResponseData() 读取响应，更新 _status
+    → _UpdateLanguageBar(_status)
+      → _SetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION) ✅ 成功
+      → _pLangBarButton->UpdateWeaselStatus(stat)
+  → OS 指示器更新 ✅
 ```
 
-### 3. 图标句柄不同
+关键点：`_UpdateLanguageBar` 在 **ITfEditSession::DoEditSession** 中执行，不在 OnChange 回调内，所以 `SetValue` 成功。
 
-调试输出显示 `m_iconAlpha` 和 `m_iconEnabled` 有不同的句柄值：
+### AppIME 切换（出错的路径）
+
 ```
-[12] DrawIcon: m_iconAlpha=1578370695, m_iconEnabled=464127479
+AppIME 切换英文模式
+  → 调用 WeaselServer.exe /ascii
+    → 发送 TrayCommand(ENABLE_ASCII) 到服务器
+    → RIME 切换 ascii_mode，发送响应给 AppIME（WeaselTSF 不收到）
+  → 可能写入 TSF compartment（是否写入取决于 AppIME 的具体实现）
+    → 如果写入：
+      → OnChange 回调 (_HandleCompartment)
+        → _SetCompartmentDWORD() ❌ E_UNEXPECTED（TSF 禁止在回调内写同一 compartment）
+        → PostMessage 延迟写入（依赖 app 消息泵）
+    → 如果不写入：
+      → OnChange 不触发
+      → WeaselTSF 完全不知情
+      → OS 指示器保持旧值
 ```
 
-### 4. 图标文件正确
+## 关键发现
 
-- `en.ico` 文件大小：46850 字节（用户确认显示"A"图标）
-- `zh.ico` 文件大小：38611 字节（显示"中"图标）
-- WeaselTSF.rc 正确配置：`IDI_EN ICON "..\\resource\\en.ico"`
+### 1. TSF OnChange 回调内不能写本 compartment
 
-## 已实施的修复
+`ITfCompartment::SetValue()` 在 OnChange 回调（`ITfCompartmentEventSink::OnChange`）中调用时返回 `hr=0x8000FFFF (E_UNEXPECTED)`。这是 TSF 的固有限制——不允许在 change notification 处理过程中再次修改同一 compartment。
 
-### 修复1：Compartment.cpp - 添加 WeaselTSF UI 更新
+所有场景的失败根因都是 `_UpdateLanguageBar` 在 OnChange 内调用时，compartment 写入失败。
 
-在 `_HandleCompartment` 中，当 `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION` 变更时，调用 `_cand->UpdateUI()` 更新 WeaselTSF 的 UI：
+### 2. `_updatingLanguageBar` 防重入保护
 
 ```cpp
-_HandleLangBarMenuSelect(_status.ascii_mode
-                             ? ID_WEASELTRAY_ENABLE_ASCII
-                             : ID_WEASELTRAY_DISABLE_ASCII);
-if (_pEditSessionContext)
-  m_client.ClearComposition();
-_UpdateLanguageBar(_status);
-// 更新 WeaselTSF 的 UI 状态（光标位置图标）
-_cand->UpdateUI(weasel::Context(), _status);
-```
+void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
+  // ... 计算 flags ...
+  _updatingLanguageBar = true;
+  _SetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
+  _updatingLanguageBar = false;
+  // ...
+}
 
-### 修复2：WeaselPanel.cpp - 添加状态变化检测
-
-在 `WeaselPanel::Refresh()` 中，同时检查 `m_ctx` 和 `m_status` 的变化：
-
-```cpp
-if (m_ctx != m_octx || m_status != m_ostatus) {
-  m_octx = m_ctx;
-  m_ostatus = m_status;
-  RedrawWindow();
+HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
+  if (IsEqualGUID(guidCompartment, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION)) {
+    if (_updatingLanguageBar) {
+      return S_OK;  // 忽略自己写入触发的 OnChange
+    }
+    // ...
+  }
 }
 ```
 
-### 修复3：WeaselIPCData.h - 添加 operator!=
+此保护防止写入触发再次写入的无限循环。
 
-在 `Status` 结构体中添加 `operator!=`：
+### 3. `_pLangBarButton` 判空导致 Win11 gvim 问题
 
+原 `_UpdateLanguageBar` 末尾：
 ```cpp
-bool operator!=(const Status status) const { return !(*this == status); }
+if (_pLangBarButton)
+    _pLangBarButton->UpdateWeaselStatus(stat);
 ```
 
-### 修复4：CandidateList.cpp - 确保 UI 面板创建
+Windows 11 某些应用中 `_pLangBarButton` 为 NULL（TSF 未创建语言栏按钮），导致按钮更新被跳过。**移除该判空后，gvim 在 Win11 上恢复正确。**
 
-在 `CCandidateList::UpdateUI` 中，先更新状态再创建面板：
+但这本质上是绕过：在语言栏按钮不存在的系统中，OS 指示器可能依赖 compartment 值而非按钮图标。
 
-```cpp
-// 先更新状态
-_ui->Update(ctx, status);
-// 再创建面板（确保 m_status 引用的是最新状态）
-_MakeUIWindow();
-// 刷新面板
-_ui->Refresh();
+### 4. `UI::Create` 非幂等导致候选窗口冻结
+
+`UI::Create` 中直接 `new CWnd` 没有 `IsWindow()` 检查。当 `_HandleCompartment` 中调用 `_cand->UpdateUI()` 时可能重复创建窗口，导致 WndProc 覆盖和死锁。
+
+修复：在 `Create()` 开头加 `if (IsWindow()) return true;`。
+
+### 5. 尝试过的修复及其效果
+
+| 修复 | 文件 | 效果 |
+|------|------|------|
+| `_HandleCompartment` 中调用 `_cand->UpdateUI()` | Compartment.cpp | 引入回归：候选窗口不关闭 |
+| `UI::Create` 加 `IsWindow()` 检查 | WeaselUI.cpp | 修复候选窗口冻结 |
+| `_HandleCompartment` 中移除 `_cand->UpdateUI()` + 改用 `_cand->RefreshStatus()` | Compartment.cpp | Win10 出现两个图标（我们的 Panel + OS 指示器）；Win11 只有 OS 指示器但仍错误 |
+| `_UpdateLanguageBar` 中移除 `_pLangBarButton` 判空 | LanguageBar.cpp | 修复 gvim Win11（焦点变化路径）；AppIME 仍无效 |
+| 从 CONVERSION handler 移除 `_UpdateLanguageBar`（因为 E_UNEXPECTED），保留 `UpdateWeaselStatus` | Compartment.cpp | 无变化（_UpdateLanguageBar 之前就失败了） |
+| `_HandleCompartment` 内 `PostMessage` 延迟调用 `_UpdateLanguageBar` | Compartment.cpp, WeaselTSF.h/cpp | 理论上应该在回调外写入；实际因 app 消息泵不定时，结果不可靠 |
+| `_HandleCompartment` 内移除 `RefreshStatus`（不再自行弹图标）| Compartment.cpp | 去掉冗余 panel 图标 |
+
+### 6. 最终状态
+
+```
+手动 Shift 切换:  key → ProcessKeyEvent → DoEditSession  ✅ 始终正常
+gvim Win10:       focus change → DoEditSession            ✅ 正常
+gvim Win11:       focus change → DoEditSession            ⚠️ 时而正确（与 app 消息泵有关）
+AppIME 切换:      仅 TrayCommand → 不触发 WeaselTSF       ❌ OS 指示器始终"中"
 ```
 
-## 遗留问题
+## gvim Win10/Win11 差异分析
 
-### 问题：图标显示仍然不正确
+### 路径 A：gvim 直接写 TSF compartment→OnChange
 
-尽管调试输出显示所有步骤都正确执行：
-- `m_status.ascii_mode=true`
-- 选择了 `m_iconAlpha`
-- `RedrawWindow()` 被调用
+gvim 切换模式时（通过 vim-im-select 或 imm32 TSF API），可能直接写入 `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`：
 
-但用户看到的仍然是"中"图标。
+```
+gvim ESC/i
+  → 写 TSF compartment (设置 ascii_mode)
+  → OnChange 触发 _HandleCompartment(CONVERSION)
+  → 更新 _status、_HandleLangBarMenuSelect、UpdateWeaselStatus
+  → (当前：PostMessage 延迟 _UpdateLanguageBar)
+```
 
-### 可能的原因
+| 平台 | 行为 |
+|------|------|
+| Win10 | OS 指示器直接从 compartment 读取 → gvim 写入后立即正确 ✅ |
+| Win11 | OS 指示器可能依赖按钮 OnUpdate 而非 compartment → 延迟更新不及时则错误 ❌ |
 
-1. **图标资源加载问题**：`LoadIconW(IDI_EN, ...)` 可能加载了错误的图标资源
-2. **多个 UI 实例**：可能存在多个 WeaselPanel 实例，其中一个显示旧图标
-3. **Windows TSF 框架状态指示器**：用户看到的可能是 Windows 系统自带的输入法状态指示器，而不是 WeaselPanel
-4. **图标缓存**：Windows 可能缓存了旧的图标
+### 路径 B：gvim 触发焦点变化→OnSetThreadFocus
 
-### 下一步调查方向
+gvim 失焦/聚焦时，TSF 调用 `OnSetThreadFocus`。当前代码：
 
-1. 确认用户看到的"中"图标是否真的来自 WeaselPanel
-2. 检查是否有其他 UI 组件在显示状态图标
-3. 检查 Windows TSF 框架的状态指示器机制
+```cpp
+STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
+  // ...
+  if (m_client.Echo()) {                           // ← 条件 1
+    m_client.ProcessKeyEvent(0);
+    weasel::ResponseParser parser(..., &_status, ...);
+    bool ok = m_client.GetResponseData(parser);    // ← 条件 2
+    if (ok)
+      _UpdateLanguageBar(_status);
+  }
+  // 如果以上任一条件失败 → _UpdateLanguageBar 被跳过
+  return S_OK;
+}
+```
+
+| 平台 | Echo 稳定性 | GetResponseData 稳定性 | 结果 |
+|------|-------------|----------------------|------|
+| Win10 | ✅ 始终成功 | ✅ 始终成功 | `_UpdateLanguageBar` 始终执行 → OS 正确 |
+| Win11 | ⚠️ 偶发失败 | ⚠️ 偶发失败 | `_UpdateLanguageBar` 被跳过 → "时而正确" |
+
+**Win11 "时而正确"的根因**：`m_client.Echo()` 或 `m_client.GetResponseData()` 偶发失败 → `_UpdateLanguageBar` 被跳过 → compartment 未写入 → OS 指示器不更新。
+
+### 差异总结
+
+| 场景 | Win10 | Win11 |
+|------|-------|-------|
+| gvim 直接写 compartment（路径 A） | ✅ OS 读 compartment | ❌ 依赖按钮更新（OnChange 内可能被忽略） |
+| gvim 焦点变化（路径 B） | ✅ Echo 稳定 | ⚠️ Echo/GetResponseData 偶发失败 |
+| 手动 Shift 切换 | ✅ DoEditSession | ✅ DoEditSession |
+| AppIME 切换 | ❌ 不写 compartment，OnChange 不触发 | ❌ 同上 |
+
+## 解决方向（更新版）
+
+### 方向 A：AppIME 写 TSF compartment（必须）
+
+让 AppIME 在调用 `WeaselServer.exe /ascii` 后，主动调用 TSF API 写入 `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`。
+
+这一步是**必要条件**——没有 OnChange 触发，WeaselTSF 永远不知道状态变了。
+
+### 方向 B：轮询 —— 已放弃
+
+切换后轮询到新状态时，OS 指示器已经显示错误图标了，没有实际意义。
+
+### 方向 C：RequestEditSession 替代 PostMessage（有效）
+
+在 `_HandleCompartment` 中如果当前有焦点上下文，使用 `ITfContext::RequestEditSession` 异步执行 `_UpdateLanguageBar`。TSF 保证 EditSession 最终执行，不依赖 app 消息泵。如果拿不到上下文（如控制台应用），再 fallback 到 PostMessage。
+
+### 方向 D（新）：无条件 OnSetThreadFocus
+
+修复 `OnSetThreadFocus` 中的条件跳过问题——无论 Echo/GetResponseData 是否成功，都调用 `_UpdateLanguageBar`：
+
+```cpp
+STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
+  // ...
+  if (m_client.Echo()) {
+    m_client.ProcessKeyEvent(0);
+    weasel::ResponseParser parser(..., &_status, ...);
+    m_client.GetResponseData(parser);         // 不检查返回值
+  }
+  _UpdateLanguageBar(_status);                // 始终执行
+  return S_OK;
+}
+```
+
+## 下一步计划
+
+### Step 1：无条件 OnSetThreadFocus（方向 D）
+
+修复 `WeaselTSF.cpp` 中 `OnSetThreadFocus`，无条件调用 `_UpdateLanguageBar`。
+
+**目标**：修复 gvim Win11 "时而正确"问题。
+
+### Step 2：RequestEditSession 替代 PostMessage（方向 C）
+
+在 `_HandleCompartment` 中：
+- 优先 `_pThreadMgr->GetFocus` → 拿 ITfContext → `RequestEditSession` → `DoEditSession` → `_UpdateLanguageBar`
+- 拿不到上下文时 fallback 到 `PostMessage`
+
+**目标**：确保 AppIME 写 compartment 后（方向 A 实现时），OnChange 内触发的 compartment 写入可靠执行。
+
+### Step 3：AppIME 写 compartment（方向 A）
+
+在 `AppIME.ahk` 的切换逻辑中，在 `WeaselServer.exe /ascii` 之后添加 TSF API 调用，写入 `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`。
+
+**目标**：让 OnChange 触发，Steps 1+2 才有机会执行。
+
+### 预期效果
+
+| 场景 | 当前状态 | Step 1 后 | Step 1+2 后 | Step 1+2+3 后 |
+|------|---------|-----------|-------------|---------------|
+| gvim Win10 | ✅ | ✅ | ✅ | ✅ |
+| gvim Win11 | ⚠️ 时而正确 | ✅ 稳定正确 | ✅ 稳定正确 | ✅ 稳定正确 |
+| AppIME Win10 | ❌ "中" | ❌ "中" | ❌ "中"（OnChange 不触发） | ✅ |
+| AppIME Win11 | ❌ "中" | ❌ "中" | ❌ "中"（OnChange 不触发） | ✅ |
+
+## 测试记录
+
+### 2025-07-12 版本
+
+OS 指示器（任务栏"中"/"A"）的判定逻辑：
+- Win10 任务栏输入法指示器：可能读取 TSF compartment 值
+- Win11 任务栏输入法指示器：可能读取 IME 语言栏按钮图标 + compartment
+
+| 场景 | Win10 | Win11 |
+|------|-------|-------|
+| gvim 模式切换 | ✅ | ⚠️ 有时正确 |
+| AppIME 模式切换 | ❌ "中" | ❌ "中" |
+| 手动 Shift 切换 | ✅ | ✅ |
 
 ## 编译部署
 
@@ -146,11 +281,3 @@ Copy-Item output\weasel.dll C:\Windows\SysWOW64\weasel.dll -Force
 
 # 重启使用 RIME 的应用
 ```
-
-## 调试方法
-
-使用 DebugView 查看调试输出：
-1. 运行 `dbgview64.exe`
-2. 菜单 → Capture → Capture Win32（确保已勾选）
-3. 在目标应用中触发 im-control 切换
-4. 观察调试输出
