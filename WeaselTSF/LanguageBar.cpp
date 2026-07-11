@@ -402,6 +402,14 @@ void WeaselTSF::_UninitLanguageBar() {
 void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
   DWORD flags;
   _GetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
+  bool prev_ascii = stat.ascii_mode;
+  if (prev_ascii != !(flags & TF_CONVERSIONMODE_NATIVE)) {
+    stat.ascii_mode = !prev_ascii;
+    _status.ascii_mode = stat.ascii_mode;
+    _HandleLangBarMenuSelect(stat.ascii_mode
+                                 ? ID_WEASELTRAY_ENABLE_ASCII
+                                 : ID_WEASELTRAY_DISABLE_ASCII);
+  }
   if (stat.ascii_mode)
     flags &= (~TF_CONVERSIONMODE_NATIVE);
   else
