@@ -32,6 +32,8 @@ WeaselTSF::WeaselTSF() {
 
   _fCUASWorkaroundTested = _fCUASWorkaroundEnabled = FALSE;
 
+  _hDeferredMsgWnd = NULL;
+
   _cand = new CCandidateList(this);
 
   DllAddRef();
@@ -109,6 +111,8 @@ STDAPI WeaselTSF::Deactivate() {
 
   _UninitCompartment();
 
+  _UninitDeferredWindow();
+
   _UninitThreadMgrEventSink();
 
   _pThreadMgr = NULL;
@@ -145,6 +149,8 @@ STDAPI WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
   //	some app might init failed because it not provide DisplayAttributeInfo,
   // like some opengl stuff
   _InitDisplayAttributeGuidAtom();
+
+  _InitDeferredWindow();
 
   if (!_InitPreservedKey())
     goto ExitError;
@@ -203,6 +209,38 @@ void WeaselTSF::_UninitThreadFocusSink() {
     return;
   if (FAILED(pSource->UnadviseSink(_dwThreadFocusSinkCookie)))
     return;
+}
+
+BOOL WeaselTSF::_InitDeferredWindow() {
+  HWND hWnd = CreateWindowExW(0, L"STATIC", L"WeaselTSF_DeferredUpdate", 0, 0,
+                               0, 0, 0, HWND_MESSAGE, NULL, NULL, NULL);
+  if (!hWnd)
+    return FALSE;
+  SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)this);
+  SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)_DeferredWndProc);
+  _hDeferredMsgWnd = hWnd;
+  return TRUE;
+}
+
+void WeaselTSF::_UninitDeferredWindow() {
+  if (_hDeferredMsgWnd) {
+    DestroyWindow(_hDeferredMsgWnd);
+    _hDeferredMsgWnd = NULL;
+  }
+}
+
+LRESULT CALLBACK WeaselTSF::_DeferredWndProc(HWND hWnd,
+                                             UINT msg,
+                                             WPARAM wParam,
+                                             LPARAM lParam) {
+  if (msg == WM_APP + 100) {
+    WeaselTSF* pThis = (WeaselTSF*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+    if (pThis) {
+      pThis->_UpdateLanguageBar(pThis->_status);
+    }
+    return 0;
+  }
+  return DefWindowProcW(hWnd, msg, wParam, lParam);
 }
 
 STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,

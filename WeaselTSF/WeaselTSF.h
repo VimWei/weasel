@@ -190,6 +190,13 @@ class WeaselTSF : public ITfTextInputProcessorEx,
 
   void _Reconnect();
   std::wstring _GetRootDir();
+  BOOL _InitDeferredWindow();
+  void _UninitDeferredWindow();
+  static LRESULT CALLBACK _DeferredWndProc(HWND hWnd,
+                                           UINT msg,
+                                           WPARAM wParam,
+                                           LPARAM lParam);
+  HWND _hDeferredMsgWnd;
 
   bool isImmersive() const {
     return (_activateFlags & TF_TMF_IMMERSIVEMODE) != 0;

@@ -288,7 +288,8 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
         m_client.ClearComposition();
       if (_pLangBarButton)
         _pLangBarButton->UpdateWeaselStatus(_status);
-      _cand->RefreshStatus(_status);
+      if (_hDeferredMsgWnd)
+        PostMessage(_hDeferredMsgWnd, WM_APP + 100, 0, 0);
     } else {
       if (_isToOpenClose && !_IsKeyboardOpen()) {
         _SetKeyboardOpen(true);
