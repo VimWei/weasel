@@ -155,7 +155,9 @@ bool UI::IsShown() const {
 }
 
 void UI::Refresh() {
+  OutputDebugStringA(pimpl_ ? "UI::Refresh: pimpl_ is valid\n" : "UI::Refresh: pimpl_ is NULL\n");
   if (pimpl_) {
+    OutputDebugStringA(pimpl_->panel.IsWindow() ? "UI::Refresh: panel.IsWindow()=true\n" : "UI::Refresh: panel.IsWindow()=false\n");
     pimpl_->Refresh();
   }
 }
@@ -183,5 +185,7 @@ void UI::Update(const Context& ctx, const Status& status) {
       }
     }
   }
+  OutputDebugStringA("UI::Update: calling Refresh()\n");
   Refresh();
+  OutputDebugStringA("UI::Update: Refresh() completed\n");
 }
