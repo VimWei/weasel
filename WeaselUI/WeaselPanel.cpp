@@ -32,10 +32,8 @@ inline void LoadIconNecessary(t0& a, t1& b, t2& c, int d) {
   }
   a = b;
   if (b.empty()) {
-    OutputDebugStringA(("LoadIconNecessary: loading default icon, d=" + std::to_string(d) + "\n").c_str());
     c.LoadIconW(d, STATUS_ICON_SIZE, STATUS_ICON_SIZE, LR_DEFAULTCOLOR);
   } else {
-    OutputDebugStringW((L"LoadIconNecessary: loading custom icon, b=" + std::wstring(b.c_str()) + L"\n").c_str());
     c = (HICON)LoadImage(NULL, b.c_str(), IMAGE_ICON, STATUS_ICON_SIZE,
                           STATUS_ICON_SIZE, LR_LOADFROMFILE);
   }
@@ -72,14 +70,12 @@ WeaselPanel::WeaselPanel(weasel::UI& ui)
       pDWR(ui.pdwr()),
       _UICallback(ui.uiCallback()),
       _m_gdiplusToken(0) {
-  OutputDebugStringA("WeaselPanel constructor: loading icons\n");
   m_iconDisabled.LoadIconW(IDI_RELOAD, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
                            LR_DEFAULTCOLOR);
   m_iconEnabled.LoadIconW(IDI_ZH, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
                           LR_DEFAULTCOLOR);
   m_iconAlpha.LoadIconW(IDI_EN, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
                         LR_DEFAULTCOLOR);
-  OutputDebugStringA(("WeaselPanel constructor: m_iconAlpha loaded, IDI_EN=" + std::to_string(IDI_EN) + "\n").c_str());
   m_iconFull.LoadIconW(IDI_FULL_SHAPE, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
                        LR_DEFAULTCOLOR);
   m_iconHalf.LoadIconW(IDI_HALF_SHAPE, STATUS_ICON_SIZE, STATUS_ICON_SIZE,
@@ -139,7 +135,6 @@ void WeaselPanel::_CreateLayout() {
 
 // 更新界面
 void WeaselPanel::Refresh() {
-  OutputDebugStringA(m_status.ascii_mode ? "WeaselPanel::Refresh: m_status.ascii_mode=true\n" : "WeaselPanel::Refresh: m_status.ascii_mode=false\n");
   bool should_show_icon =
       (m_status.ascii_mode || !m_status.composing || !m_ctx.aux.empty());
   m_candidateCount = min(m_ctx.cinfo.candies.size(), MAX_CANDIDATES_COUNT);
@@ -182,19 +177,12 @@ void WeaselPanel::Refresh() {
     _RepositionWindow();
     bool ctx_changed = (m_ctx != m_octx);
     bool status_changed = (m_status != m_ostatus);
-    OutputDebugStringA(ctx_changed ? "[7] WeaselPanel::Refresh: ctx_changed=true\n" : "[7] WeaselPanel::Refresh: ctx_changed=false\n");
-    OutputDebugStringA(status_changed ? "[8] WeaselPanel::Refresh: status_changed=true\n" : "[8] WeaselPanel::Refresh: status_changed=false\n");
     if (ctx_changed || status_changed) {
       m_octx = m_ctx;
       m_ostatus = m_status;
-      OutputDebugStringA("[9] WeaselPanel::Refresh: calling RedrawWindow\n");
       RedrawWindow();
-      OutputDebugStringA("[10] WeaselPanel::Refresh: RedrawWindow completed\n");
-    } else {
-      OutputDebugStringA("[X] WeaselPanel::Refresh: skipped RedrawWindow (no change)\n");
     }
-  } else {
-    OutputDebugStringA("[X] WeaselPanel::Refresh: skipped (hide_candidates)\n");
+  }
   }
 }
 
@@ -1097,7 +1085,7 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
     // end texts drawing
 
     // status icon (I guess Metro IME stole my idea :)
-    OutputDebugStringA(m_layout->ShouldDisplayStatusIcon() ? "[11] WeaselPanel::DrawIcon: ShouldDisplayStatusIcon=true\n" : "[11] WeaselPanel::DrawIcon: ShouldDisplayStatusIcon=false\n");
+
     if (m_layout->ShouldDisplayStatusIcon()) {
       // decide if custom schema zhung icon to show
       LoadIconNecessary(m_current_zhung_icon, m_style.current_zhung_icon,
@@ -1122,8 +1110,7 @@ void WeaselPanel::DoPaint(CDCHandle dc) {
               : (m_status.type == SCHEMA
                      ? m_iconEnabled
                      : (m_status.full_shape ? m_iconFull : m_iconHalf)));
-      OutputDebugStringA(("[12] DrawIcon: m_iconAlpha=" + std::to_string((uint64_t)(HICON)m_iconAlpha) + ", m_iconEnabled=" + std::to_string((uint64_t)(HICON)m_iconEnabled) + "\n").c_str());
-      OutputDebugStringA(m_status.ascii_mode ? "[12] WeaselPanel::DrawIcon: m_status.ascii_mode=true -> m_iconAlpha\n" : "[12] WeaselPanel::DrawIcon: m_status.ascii_mode=false\n");
+
       memDC.DrawIconEx(iconRect.left, iconRect.top, icon, 0, 0);
       drawn = true;
     }

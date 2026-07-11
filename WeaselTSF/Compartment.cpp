@@ -207,7 +207,6 @@ HRESULT WeaselTSF::_SetCompartmentDWORD(const DWORD& value, const GUID guid) {
       var.vt = VT_I4;
       var.lVal = value;
       hr = pCompartment->SetValue(_tfClientId, &var);
-      OutputDebugStringA(("_SetCompartmentDWORD: SetValue hr=0x" + std::to_string(hr) + " clientId=" + std::to_string(_tfClientId) + "\n").c_str());
     }
     pCompartment->Release();
   }
@@ -269,34 +268,27 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
   } else if (IsEqualGUID(guidCompartment,
                          GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION)) {
     if (_updatingLanguageBar) {
-      OutputDebugStringA("[1] _HandleCompartment: skipped (_updatingLanguageBar)\n");
       return S_OK;
     }
     DWORD convMode = 0;
     _GetCompartmentDWORD(convMode,
                          GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
     bool desiredAsciiMode = !(convMode & TF_CONVERSIONMODE_NATIVE);
-    OutputDebugStringA(desiredAsciiMode ? "[1] _HandleCompartment: desiredAsciiMode=true\n" : "[1] _HandleCompartment: desiredAsciiMode=false\n");
-    OutputDebugStringA(_status.ascii_mode ? "[1] _HandleCompartment: _status.ascii_mode=true\n" : "[1] _HandleCompartment: _status.ascii_mode=false\n");
     if (desiredAsciiMode != _status.ascii_mode) {
       _status.ascii_mode = desiredAsciiMode;
-      OutputDebugStringA("[2] _HandleCompartment: _status.ascii_mode updated\n");
       if (_isToOpenClose && !_IsKeyboardOpen()) {
         _SetKeyboardOpen(true);
       }
       if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
         _EnableLanguageBar(true);
-      OutputDebugStringA("[3] _HandleCompartment: calling _HandleLangBarMenuSelect\n");
       _HandleLangBarMenuSelect(_status.ascii_mode
                                    ? ID_WEASELTRAY_ENABLE_ASCII
                                    : ID_WEASELTRAY_DISABLE_ASCII);
       if (_pEditSessionContext)
         m_client.ClearComposition();
-      OutputDebugStringA("[4] _HandleCompartment: calling _UpdateLanguageBar\n");
       _UpdateLanguageBar(_status);
       _cand->RefreshStatus(_status);
     } else {
-      OutputDebugStringA("[X] _HandleCompartment: force-sync compartment bits\n");
       if (_isToOpenClose && !_IsKeyboardOpen()) {
         _SetKeyboardOpen(true);
         if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())

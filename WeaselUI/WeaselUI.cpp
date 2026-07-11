@@ -12,9 +12,7 @@ class weasel::UIImpl {
   UIImpl(weasel::UI& ui) : panel(ui), shown(false) {}
   ~UIImpl() {}
   void Refresh() {
-    OutputDebugStringA("UIImpl::Refresh: called\n");
     if (!panel.IsWindow()) {
-      OutputDebugStringA("UIImpl::Refresh: skipped (panel not window)\n");
       return;
     }
     if (timer) {
@@ -23,7 +21,6 @@ class weasel::UIImpl {
       timer = 0;
     }
     panel.Refresh();
-    OutputDebugStringA("UIImpl::Refresh: panel.Refresh() completed\n");
   }
   void Show();
   void Hide();
@@ -157,9 +154,7 @@ bool UI::IsShown() const {
 }
 
 void UI::Refresh() {
-  OutputDebugStringA(pimpl_ ? "UI::Refresh: pimpl_ is valid\n" : "UI::Refresh: pimpl_ is NULL\n");
   if (pimpl_) {
-    OutputDebugStringA(pimpl_->panel.IsWindow() ? "UI::Refresh: panel.IsWindow()=true\n" : "UI::Refresh: panel.IsWindow()=false\n");
     pimpl_->Refresh();
   }
 }
@@ -171,9 +166,7 @@ void UI::UpdateInputPosition(RECT const& rc) {
 }
 
 void UI::Update(const Context& ctx, const Status& status) {
-  OutputDebugStringA(status.ascii_mode ? "UI::Update: ascii_mode=true\n" : "UI::Update: ascii_mode=false\n");
   if (ctx_ == ctx && status_ == status) {
-    OutputDebugStringA("UI::Update: skipped (same status)\n");
     return;
   }
   ctx_ = ctx;
@@ -187,7 +180,5 @@ void UI::Update(const Context& ctx, const Status& status) {
       }
     }
   }
-  OutputDebugStringA("UI::Update: calling Refresh()\n");
   Refresh();
-  OutputDebugStringA("UI::Update: Refresh() completed\n");
 }

@@ -395,7 +395,5 @@ bool StandardLayout::ShouldDisplayStatusIcon() const {
          !((_style.layout_type == UIStyle::LAYOUT_HORIZONTAL_FULLSCREEN ||
             _style.layout_type == UIStyle::LAYOUT_VERTICAL_FULLSCREEN) &&
            !_context.aux.empty());
-  OutputDebugStringA(_status.ascii_mode ? "ShouldDisplayStatusIcon: _status.ascii_mode=true\n" : "ShouldDisplayStatusIcon: _status.ascii_mode=false\n");
-  OutputDebugStringA(result ? "ShouldDisplayStatusIcon: result=true\n" : "ShouldDisplayStatusIcon: result=false\n");
   return result;
 }
