@@ -89,6 +89,8 @@ VOID CALLBACK UIImpl::OnTimer(_In_ HWND hwnd,
 
 bool UI::Create(HWND parent) {
   if (pimpl_) {
+    if (pimpl_->panel.IsWindow())
+      return true;
     pimpl_->panel.Create(
         parent, 0, 0, WS_POPUP,
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
