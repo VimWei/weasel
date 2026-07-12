@@ -258,6 +258,13 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
   if (IsEqualGUID(guidCompartment, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)) {
     if (_isToOpenClose) {
       BOOL isOpen = _IsKeyboardOpen();
+      {
+        WCHAR buf[256];
+        StringCchPrintfW(buf, 256,
+            L"WTSF_OPENCLOSE if: open=%d _stat=%d LBB=%p",
+            (int)isOpen, (int)_status.ascii_mode, _pLangBarButton.p);
+        OutputDebugStringW(buf);
+      }
       // clear composition when close keyboard
       if (!isOpen && _pEditSessionContext) {
         m_client.ClearComposition();
@@ -269,7 +276,17 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
         _status.ascii_mode = !(convFlags & TF_CONVERSIONMODE_NATIVE);
       _UpdateLanguageBar(_status);
     } else {
-      BOOL keyboardJustClosed = !_IsKeyboardOpen();
+      DWORD ocFlags = 0;
+      _GetCompartmentDWORD(ocFlags, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE);
+      BOOL keyboardJustClosed = (ocFlags == 0);
+      {
+        WCHAR buf[256];
+        StringCchPrintfW(buf, 256,
+            L"WTSF_OPENCLOSE else: oc=%d justClosed=%d _stat=%d LBB=%p",
+            (int)ocFlags, (int)keyboardJustClosed,
+            (int)_status.ascii_mode, _pLangBarButton.p);
+        OutputDebugStringW(buf);
+      }
       _SetKeyboardOpen(true);
       if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
         _EnableLanguageBar(true);
@@ -278,6 +295,7 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
                                           GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION))) {
         bool desiredAscii = !(convFlags & TF_CONVERSIONMODE_NATIVE);
         if (keyboardJustClosed && !desiredAscii) {
+          OutputDebugStringW(L"WTSF_OPENCLOSE else: FORCE English branch");
           _status.ascii_mode = true;
           _HandleLangBarMenuSelect(ID_WEASELTRAY_ENABLE_ASCII);
           if (_pEditSessionContext)

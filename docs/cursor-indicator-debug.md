@@ -908,3 +908,71 @@ if (gvim just closed OPENCLOSE) && (CONVERSION compartment says Chinese) {
 
 - 如果 Win11 用户实际场景在 OPENCLOSE 关闭且 Chinese 时不希望切 English（理论上罕见，因为 OPENCLOSE 关 = IME 关 = 不接收按键输入，状态留着 Chinese 后重新打开仍是 Chinese 影响不大，但用户期望未必一致）
 - 若 v8 引入新故障，可单独回退 v8（保留 v7 im-control fix）以收敛
+
+## 九次实施（v7+v8 部署后）：残留场景 4 失败的诊断（v9 diagnostic log）
+
+v7 (im-control `0daa450` 修场景 2) + v8 (WeaselTSF OPENCLOSE else 方向性 force 修场景 4) 部署后测试反馈：
+
+| # | 场景 | 结果 |
+|---|------|------|
+| 1 | Win10 AppME 闲置 8s | ✅ |
+| 2 | Win10 gvim insert 英文 → Esc | ✅ v7 fix |
+| 2nd | Win10 gvim insert 中文 → Esc | ✅ |
+| 3 | Win11 AppME 闲置 8s | ✅ |
+| 4 quick | Win11 gvim Shift 中 → <1s Esc | ✅ |
+| 4 2s+ | **Win11 gvim Shift 中 → 2s+ 停顿 → Esc** | ❌ 光标 LBB 显示"中" |
+| 5 | Win10/Win11 Shift、Ctrl+Space | ✅ |
+
+仅剩场景 4 残留。用户给出关键诊断细节：
+
+> 接着连续中文输入 → 快速 Esc 仍正确显示"A"；键盘停止输入 2s+ Esc 即出现"中"。
+>
+> 另：Win10 同样操作 Shift 中 → 2s+ Esc，光标处语言栏图标会快速先后闪现"中"→"A"，最终用户看到"A"。Win11 直接只有"中"——没有闪烁的过程。
+
+### 关键诊断线索
+
+#### 线索 A：2s 时间窗 = WeaselTSF `_ReconcileCompartment` 定时器周期
+
+每 2s 一次本地 `_status` vs CONVERSION compartment 比对。中文输入期间双方都是 NATIVE on（Chinese），定时器无 mismatch 无操作——不改变状态。但是不是定时器期间有副作用？
+
+#### 线索 B：Win10 闪烁"中"→"A"，Win11 直接"中"无闪烁
+
+闪烁意味指 LBB 在刷新：先被某事件刷成"中"，再被另一事件刷回"A"——证明 Win10 走的是 OPENCLOSE OnChange 主路径 + 2s timer reconcile。Win11 不闪烁说明 **OPENCLOSE OnChange 在 Win11 上根本未触发 OPENCLOSE else 分支**，v8 force-English 代码没机会跑。
+
+这与归档方案 §4"Win11 OPENCLOSE else 分支的 `_SetKeyboardOpen(true)` 引发级联反转"矛盾——归档文档说 Win11 OPENCLOSE OnChange 会触发 else 分支的 blind toggle。但实测下，Win11 v8 调试日志没有 `WTSF_OPENCLOSE else` 出现，意味着 `OnChange(OPENCLOSE)` 在 Win11 的 `tfClientId` 看不到。
+
+#### 线索 C：`!_IsKeyboardOpen()` vs `_GetCompartmentDWORD` 时机不确定
+
+v8 用 `!_IsKeyboardOpen()` 判 `keyboardJustClosed`，该函数读当前 compartment 值。但 TSF OnChange 是异步的——当 `_HandleCompartment(OPENCLOSE)` 调到时，compartment 已被 SetValue 至新值 0，所以 `_IsKeyboardOpen()` 应该返回 false。但这可能在 Win11 上有时序问题。
+
+### v9 改动：加诊断日志确认 OPENCLOSE OnChange 触发情况
+
+`WeaselTSF/Compartment.cpp` OPENCLOSE handler：
+
+- **`if (_isToOpenClose)` 入口** 加 `WTSF_OPENCLOSE if: open=? _stat=? LBB=?` 日志——验证 Win10 在每次 Esc 时触发
+- **`else` 入口** 改用 `_GetCompartmentDWORD(OPENCLOSE)` 替代 `_IsKeyboardOpen()`（直接读 `ocFlags` 而非 `_IsKeyboardOpen()` 返回值），加 `WTSF_OPENCLOSE else: oc=? justClosed=? _stat=? LBB=?` 日志——验证 Win11 在每次 Esc 时是否进入 else 分支
+- **v8 force `keyboardJustClosed && !desiredAscii` 分支** 加 `WTSF_OPENCLOSE else: FORCE English branch` 日志——直观看见是否触发 force 切英文
+
+这些日志不在每次按键时输出（OPENCLOSE OnChange 仅在 open/close compartment 变化时触发），DebugView 不会陷入洪流。
+
+### v9 验证步骤
+
+请按下面流程测试并抓一份日志：
+
+1. 取最新代码编译 `build.bat weasel release`
+2. 部署 `output\weasel.dll` + `output\weaselx64.dll` 到 `C:\Windows\system32\` 和 `C:\Windows\SysWOW64\`（覆盖之前）
+3. 重启 gvim.exe (Win11)
+4. 启动 DebugView（管理员，勾选 `Capture Win32` + `Capture Global Win32`）
+5. 复现场景 4：
+   - gvim normal 停 3 秒
+   - `i` 进 insert，按 Shift 切中文，打几个中文字符，停留 **2-3 秒**，按 `Esc` 回 normal —— **这次应失败**，LBB 显示"中"
+   - **继续观察**：再 `i`、Shift 切中文，**立即快速 Esc** —— 这一次成功，LBB 显示"A"
+6. 把 DebugView 输出保存到 `C:\Apps\git-kb\repos\VimWei\weasel\docs\debugview\VIMELNUC05.log`
+
+### v9 关注点
+
+- **`WTSF_OPENCLOSE else` 是否出现**：若每次 Esc 都不见 else 日志（只看到 if 分支），证明 Win11 上 OPENCLOSE OnChange 走的也是 if-分支——这就与 `_isToOpenClose` 注册表 hack 无关，TSF 可能在 Win11 也读 `ToggleImeOnOpenClose=yes`
+- **`oc=?` 在 else 分支的值**：若 else 分支被调到且 `oc=0`，证明 `keyboardJustClosed` 判定正确，但 force 分支为何没改状态？
+- **`FORCE English branch` 是否出现**：若 `keyboardJustClosed=1` 且 `desiredAscii=0`（Chinese），应进入 force 分支。若 force 分支进入但 LBB 仍"中"，说明 `_UpdateLanguageBar` / `_HandleLangBarMenuSelect` 在别处又被覆盖
+
+抓到日志后告诉我，我接着定位。
