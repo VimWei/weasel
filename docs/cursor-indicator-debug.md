@@ -487,3 +487,67 @@ commit `8d3f406` 在引入进程内广播时**误删了这个轻量 timer**—�
    - gvim Win10 i/Esc 模式切换（v3 已 OK，v4 应继续 OK）
    - gvim Win11 i/Esc 模式切换（v3 报时好时坏，v4 应稳定 OK——2s 内必刷一次）
 5. 主功能回归：手动 Shift、Ctrl+Space、Windows Terminal 焦点切换均正常
+
+## 五次实施（v4 部署后）：Win11 gvim 仍然时好时坏——v5 回退 8d3f406 进程内广播
+
+v4 (`e94cc65`) 部署 + 精简诊断日志（`5b04a27`）后，用户在 Win11 gvim 测试，多次进出 insert 模式仍出现"时好时坏"故障。
+
+### 日志关键观察（`docs/debugview/VIMELNUC04.log`）
+
+gvim 进程（PID 3680）每次模式切换的固定 pattern：
+
+```
+t=X.X  WTSF_OPENCLOSE blind-toggle: new ascii=0 LBB=000000000A0D4CB0
+t=X.Y  WTSF_Broadcast: ascii=1 self=20820
+```
+
+- 每次都进入 OPENCLOSE else 分支（`_isToOpenClose=false`，Win11），盲 toggle 后状态被翻成中文
+- 几十毫秒后 im-control 写入的 ~NATIVE 触发 CONVERSION OnChange，进入 mismatch 分支，broadcast 正确触发 ascii=1
+- **从未出现 `WTSF_UpdateWeaselStatus: SKIP sink=NULL`** —— sink 缺失假设排除
+- LBB 指针稳定 `0xA0D4CB0`，LBB 实例未被销毁重建
+
+### 830eb55 vs e94cc65 的字符级对照
+
+`git diff 830eb55 HEAD -- WeaselTSF/Compartment.cpp WeaselTSF/LanguageBar.cpp WeaselTSF/WeaselTSF.cpp | ...`
+
+唯一差异就在 `8d3f406` 引入的进程内广播机制：
+
+| 差异 | 来源 commit | 是否影响 gvim 单进程场景 |
+|------|------------|------------------------|
+| `Weasel_RegisterInstance/Unregister/SnapshotInstances` 等注册表 | `8d3f406` | 增加每次按键的 `g_cs` 锁竞争 |
+| `ActivateEx/Deactivate` 中调 Register/Unregister | `8d3f406` | 影响 IME activate 时机 |
+| `WM_APP+101` 路由 + `_OnRemoteAsciiChange` | `8d3f406` | 单进程 gvim 同进程无他实例，广播 PostMessage 实际无效但占用代码路径 |
+| CONVERSION mismatch 分支末尾广播 block | `8d3f406` | 进入 critical section + vector 复制 + 循环（即使无他实例） |
+
+OPENCLOSE handler、CONVERSION mismatch 主路径、2s `_ReconcileCompartment` timer 与 `830eb55` 字符级等价。
+
+### v5 决策：回退 `8d3f406` 进程内广播
+
+将 `8d3f406` 之后所有进程内广播相关工作彻底删除：
+
+| 文件 | 回退内容 |
+|------|---------|
+| `WeaselTSF/Globals.h` | 删 `<vector>` include、删 `class WeaselTSF;` 前向声明、删 `g_weaselInstances` 与三个注册表函数声明 |
+| `WeaselTSF/Globals.cpp` | 删 `<algorithm>` include、删注册表实现 |
+| `WeaselTSF/WeaselTSF.h` | 删 `_GetDeferredWnd()` 公有 accessor、删 `_OnRemoteAsciiChange(bool)` 私有方法声明 |
+| `WeaselTSF/WeaselTSF.cpp` | 删 `<resource.h>` include；`ActivateEx` 末尾不再 `Weasel_RegisterInstance`；`Deactivate` 开头不再 `Weasel_UnregisterInstance`；`_DeferredWndProc` 删 `WM_APP+101` 分支；删 `_OnRemoteAsciiChange` 实现 |
+| `WeaselTSF/Compartment.cpp` | CONVERSION mismatch 分支末尾删广播 block（不再 `Weasel_SnapshotInstances` 取锁 + 循环 PostMessage） |
+| `WeaselTSF/LanguageBar.cpp` | 保留 `WTSF_Reconcile MISMATCH`、`WTSF_UpdateWeaselStatus: SKIP sink=NULL` 诊断日志（频次极低，对 DebugView 无压力） |
+
+v5 状态 = `830eb55` + v3 VimReader AppME Shift 路径。`v3 AppME` 在 AppME 闲置场景下前提供跨进程同步。gvim 进出 insert 走 `830eb55` 已知稳定的 OPENCLOSE + CONVERSION 路径。
+
+### v5 验证计划
+
+1. 编译：`build.bat weasel release`
+2. 部署：覆盖 system32 / SysWOW64 的 weasel.dll；**WeaselServer.exe 无需重新部署**
+3. 重启 gvim.exe（Win11）与其他 RIME 宿主进程
+4. 复现场景：
+   - gvim Win11 i/Esc 模式切换，重复 10+ 次，每 5 次观察一次"光标 LBB 是否正确显 A"
+   - AppME 闲置 8s（v3 VimReader 提供同步，应继续 OK）
+5. 主功能回归：手动 Shift、Ctrl+Space、Windows Terminal 焦点切换均正常
+
+### v5 假设与风险
+
+- **假设**：`8d3f406` 的进程内广播在 gvim 单进程内虽无实际同步对象可发，但 `EnterCriticalSection` + `vector` snapshot + 循环本身可能引入一次额外的延迟和锁竞争，对照 `830eb55` 不存在该路径
+- **风险**：若 v5 仍不稳定，则根因不在此，问题在原始 OPENCLOSE 盲 toggle 与 im-control CONVERSION 写入的 race；届时需要进一步回退或重新设计 OPENCLOSE else 分支行为
+- **不撤 v3 VimReader 修改**：AppME Send Shift 路径与 weasel 端正交

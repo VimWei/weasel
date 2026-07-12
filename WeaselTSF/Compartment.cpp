@@ -270,12 +270,6 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
       _UpdateLanguageBar(_status);
     } else {
       _status.ascii_mode = !_status.ascii_mode;
-      {
-        WCHAR buf[128];
-        StringCchPrintfW(buf, 128, L"WTSF_OPENCLOSE blind-toggle: new ascii=%d LBB=%p",
-                         (int)_status.ascii_mode, _pLangBarButton.p);
-        OutputDebugStringW(buf);
-      }
       _SetKeyboardOpen(true);
       if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
         _EnableLanguageBar(true);
@@ -309,19 +303,6 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
         m_client.ClearComposition();
       if (_pLangBarButton)
         _pLangBarButton->UpdateWeaselStatus(_status);
-      {
-        WCHAR buf[128];
-        StringCchPrintfW(buf, 128, L"WTSF_Broadcast: ascii=%d self=%lu",
-                         (int)desiredAsciiMode, GetCurrentThreadId());
-        OutputDebugStringW(buf);
-        auto snap = Weasel_SnapshotInstances();
-        for (auto* other : snap) {
-          if (other == this)
-            continue;
-          if (HWND h = other->_GetDeferredWnd())
-            PostMessage(h, WM_APP + 101, (WPARAM)(desiredAsciiMode ? 1 : 0), 0);
-        }
-      }
       bool editSessionScheduled = false;
       com_ptr<ITfDocumentMgr> pDocMgrFocus;
       if (_pThreadMgr &&

@@ -3,7 +3,6 @@
 
 #include "stdafx.h"
 #include <WeaselConstants.h>
-#include <vector>
 
 #define TEXTSERVICE_LANGID_HANT \
   MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL)
@@ -53,9 +52,3 @@ extern const GUID GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT;
 
 extern const GUID GUID_LBI_INPUTMODE;
 extern const GUID GUID_IME_MODE_PRESERVED_KEY;
-
-class WeaselTSF;
-extern std::vector<WeaselTSF*> g_weaselInstances;
-void Weasel_RegisterInstance(WeaselTSF* p);
-void Weasel_UnregisterInstance(WeaselTSF* p);
-std::vector<WeaselTSF*> Weasel_SnapshotInstances();
