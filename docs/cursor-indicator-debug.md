@@ -833,3 +833,78 @@ Weasel 端的 v6 改动保留，不撤。AppME 端 v6 修改（`IME_SetEnglishVi
 - 加日志在 `_HandleLangBarMenuSelect` 输出 `m_client.TrayCommand(ENABLE_ASCII)` 是否成功
 - 对比 case 4 quick 与 2s+ 这两次 server 返回的 ascii_mode，找出 RIME server 状态变化点
 - 若证实 RIME server 内部状态变化，可能需要改 RimeWithWeasel.cpp 在 OPENCLOSE OnChange 时主动通知 server "exit_insert → ascii=true"
+
+## 八次实施（v7 部署后）：v8 OPENCLOSE else-branch 加方向性 force-English 修场景 4
+
+v7 修了场景 2（im-control 端），但场景 4 暂无定向修复。结合对进程时序分析，为场景 4 加同 commit 内的 WeaselTSF-side 修复：**OPENCLOSE else-branch 加方向性 force**——当 OPENCLOSE 刚被写 0（exit 从 gvim）+ CONVERSION compartment 当前为 Chinese 时，主动切 _status 到 English 并通知 RIME。
+
+### v8 关键洞察
+
+`830eb55` 原始 OPENCLOSE else 分支的盲 toggle 之所以"乱"是因为方向不确定（false/true 互转）。但如果加上过滤条件（仅当 OPENCLOSE 刚关闭 + 当前 Chinese compartment 触发），就能定向切到 English——涵盖 gvim Esc 场景，不破坏其他场景。
+
+```
+if (gvim just closed OPENCLOSE) && (CONVERSION compartment says Chinese) {
+  _status.ascii_mode = true;  // 方向设定为 English
+  _HandleLangBarMenuSelect(ENABLE_ASCII);  // 服务端切English
+  if (_pEditSessionContext) m_client.ClearComposition();
+  _UpdateLanguageBar(_status);  // 写 ~NATIVE + 刷 LBB"A"
+}
+```
+
+### v8 各场景时序分析
+
+| 场景 | 时序 | v8 结果 |
+|------|------|---------|
+| **场景 4 2s+ Esc（之前失败）** | RIME 不切（handled=true 因为 composing 或 vim_mode 无效），compartment=NATIVE on（Chinese），后续 im-control 写 ~NATIVE 触发 mismatch branch——但若 im-control race 失败或后到达，LBB 卡 "中" | v8 OPENCLOSE else 主动切：_status→true，notify RIME 切English，写 ~NATIVE，LBB"A" ✓ |
+| **场景 4 quick Esc（之前成功）** | RIME 通过 vim_mode（若启用）切 English，compartment 已被 _UpdateLanguageBar 写 ~NATIVE | v8 OPENCLOSE else 检测：keyboardJustClosed=true，但 desiredAscii=true（已 English）→ 走第二分支（desiredAscii==_status.ascii）→ 无操作 ✓ |
+| **场景 5（Ctrl+Space 从 English 关 IME）** | OPENCLOSE=0，compartment=~NATIVE（English） | v8 第一分支：!desiredAscii=false → 不触发；第二分支不触发；只 _SetKeyboardOpen 重开 ✓ |
+| **场景 5（Ctrl+Space 从 Chinese 关 IME）** | OPENCLOSE=0，compartment=NATIVE on（Chinese） | v8 第一分支触发：_status→true，notify RIME切English，写 ~NATIVE，LBB"A" ✓ |
+| **场景 2（Win10 if-branch 走，不在 else 分支）** | 不受 v8 影响；im-control 端 v7 兜底重开 OPENCLOSE ✓ |
+
+### v8 体面之处
+
+- **不是盲 toggle**——仅当 OPENCLOSE 刚关 + Chinese 主动切 English（单向）
+- **不破坏 English 不切**——OPENCLOSE 关 + English 不切（已在 English）
+- **不依赖 RIME server `vim_mode` option**——客户端主动切
+- **不依赖 im-control 时序**——即使 im-control race 失败，OPENCLOSE else 已切
+- **im-control 后到的 -c alphanumeric 幂等**——compartment 已是 ~NATIVE，跳过 SetValue
+
+### v7 + v8 改动文件清单
+
+| 仓库 | 文件 | 改动 |
+|------|------|------|
+| weasel | `WeaselTSF/Compartment.cpp` | OPENCLOSE else 分支加 `keyboardJustClosed` 检测 + 方向性 force English 分支 |
+| weasel | `docs/cursor-indicator-debug.md` | v8 section（场景 4 修复机制 + 时序表） |
+| im-control | `injector/hook.cpp` | OPENCLOSE 重开条件不再 `*conversionModeNative` 解引用，仅检查 has_value |
+
+### v7 + v8 部署 / 验证计划
+
+1. **im-control**：
+   ```
+   cd C:\Apps\git-kb\repos\VimWei\im-control
+   git pull
+   cmake -S . -B build -G "Visual Studio 17 2022"
+   cmake --build build --config RelWithDebInfo
+   cmake --install build --prefix bin --config RelWithDebInfo
+   ```
+   把 bin\* 拷到 `C:\Apps\VimReader\lib\utils\im-control\` 覆盖
+2. **weasel**：
+   ```
+   cd C:\Apps\git-kb\repos\VimWei\weasel
+   git pull
+   build.bat weasel release
+   ```
+   把 output\weasel.dll + weaselx64.dll 部署到 system32 + SysWOW64（先 .bak）
+3. 重启 gvim.exe（Win10 + Win11）、Windows Terminal、Total Commander 等所有 RIME 宿主进程
+4. VimReader reload AHK（让 `IME_SetEnglishViaF13` 生效，本就是 v6 状态）
+5. 全 5 场景复测：
+   - 场景 1、3：Win10/Win11 AppME 闲置 8s → 光标 LBB"A"
+   - 场景 2：Win10 gvim insert 英文 → Esc → 任务栏"A"（不"禁用"）、光标 LBB"A"
+   - 场景 4 + 4th：Win11 gvim Shift 切中 → <1s 或 2s+ 等 → Esc → 光标 LBB"A"（**v8 应让 2s+ 也成功**）
+   - 场景 5：Shift/Ctrl+Space 正常
+6. 主功能回归
+
+### v8 风险
+
+- 如果 Win11 用户实际场景在 OPENCLOSE 关闭且 Chinese 时不希望切 English（理论上罕见，因为 OPENCLOSE 关 = IME 关 = 不接收按键输入，状态留着 Chinese 后重新打开仍是 Chinese 影响不大，但用户期望未必一致）
+- 若 v8 引入新故障，可单独回退 v8（保留 v7 im-control fix）以收敛

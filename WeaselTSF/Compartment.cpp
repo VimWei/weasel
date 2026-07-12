@@ -269,6 +269,7 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
         _status.ascii_mode = !(convFlags & TF_CONVERSIONMODE_NATIVE);
       _UpdateLanguageBar(_status);
     } else {
+      BOOL keyboardJustClosed = !_IsKeyboardOpen();
       _SetKeyboardOpen(true);
       if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
         _EnableLanguageBar(true);
@@ -276,7 +277,13 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
       if (SUCCEEDED(_GetCompartmentDWORD(convFlags,
                                           GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION))) {
         bool desiredAscii = !(convFlags & TF_CONVERSIONMODE_NATIVE);
-        if (desiredAscii != _status.ascii_mode) {
+        if (keyboardJustClosed && !desiredAscii) {
+          _status.ascii_mode = true;
+          _HandleLangBarMenuSelect(ID_WEASELTRAY_ENABLE_ASCII);
+          if (_pEditSessionContext)
+            m_client.ClearComposition();
+          _UpdateLanguageBar(_status);
+        } else if (desiredAscii != _status.ascii_mode) {
           _status.ascii_mode = desiredAscii;
           if (_pEditSessionContext)
             m_client.ClearComposition();
