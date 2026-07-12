@@ -205,6 +205,42 @@ snapshot 持锁瞬取，循环不持锁，`PostMessage` 异步，对已 `Deactiv
 - **方向 B（im-control 广播自定义窗口消息）**：message-only 窗口收不到顶层广播，WeaselTSF 现成无任何自定义消息入口，新增面比方向 C 大
 - **只刷 LBB 不切 RIME session**：等价于把归档修复"撤销外部变更"旧 bug 在新层面复现，明确拒绝
 
+## 为什么 vim-im-select 没有这个问题
+
+vim-im-select (`C:\Apps\vim-init\pack\mydev\opt\vim-im-select\`) 与 AppIME (`C:\Apps\VimReader\lib\utils\IME.ahk`) 走完全一样的 im-control 通路 —— 都是 `im-control -c alphanumeric/native` + `WeaselServer.exe /ascii` 两次调用。但 vim-im-select 不存在"光标 LBB 不刷新"的问题,核心区别**不在调用方式,在触发时机**。
+
+### vim-im-select 触发点全都伴随 TSF 事件
+
+`plugin/im_select.vim` 注册的 autocmd:
+
+| Vim autocmd | 同时发生的 TSF 事件 | 已有 handler 已会刷新 LBB |
+|------------|---------------------|---------------------------|
+| `InsertEnter` / `CmdLineEnter` | 用户刚按下 `i/a/o/:` 键 → `WeaselTSF::OnKeyDown` | `m_client.ProcessKeyEvent(ke)` 拉 server 权威态 → `ResponseParser` 写 `_status.ascii_mode` → `_UpdateLanguageBar(_status)` 写本线程 compartment + 调 `_pLangBarButton->UpdateWeaselStatus()` |
+| `InsertLeave` / `CmdLineLeave` | 用户按 `Esc` → 同上 | 同上 |
+| `FocusGained` / `FocusLost` | vim 窗口拿焦点 → `WeaselTSF::OnSetThreadFocus` | `m_client.ProcessKeyEvent(0)` + `GetResponseData(parser)` → 同上 |
+| `TermEnter` / `TermLeave` | 终端焦点切换 → OnSetThreadFocus 类似 | 同上 |
+
+每次切换都紧贴着用户的一个按键或一次焦点切换,**用户的下一条 keystroke 立刻会经过 `WeaselTSF::OnKeyDown`,从 server 拉回权威 `status.ascii_mode`,`_UpdateLanguageBar` 顺手刷 LBB**。被切的是英文模式 → 用户接下来打英文字符 → OnKeyDown → server 返回 ascii=true → LBB 立即"A"。延迟 < 一个 keystroke,用户感知不到。
+
+### AppIME 触发点是闲置定时器,没有任何伴随 TSF 事件
+
+`IME.ahk` 是 AutoHotkey 后台脚本,触发时机是"闲置 8 秒"。这时:
+
+- 用户**没有按键** → 没有 `WeaselTSF::OnKeyDown` → 不会调 `ProcessKeyEvent` 拉 server
+- 用户**没有切换焦点** → 没有 `OnSetThreadFocus` → 不跑 `_ReconcileCompartment` + `_UpdateLanguageBar`
+- 客户端 WeaselTSF 实例完全"睡着"
+
+`im-control -c alphanumeric` 只能写前台窗口线程的 per-thread compartment(`GetForegroundWindow()` + `SetWindowsHookEx(WH_CALLWNDPROC, ..., dwThreadId)`),光标的 TSF 文本上下文很可能在另一个进程(WindowsTerminal.exe vs OpenConsole.exe/conhost.exe 子进程)。`WeaselServer /ascii` 把 server 端所有 RIME session 的 ascii_mode 拉为 true,但客户端 LBB 只在下次 `ProcessKeyEvent` 回包时才同步——闲置中根本没有下次按键。结果:server 端权威态已切,客户端 LBB 没人触发 `UpdateWeaselStatus`,停留在"中"。
+
+### 一句话总结
+
+| 工具 | 触发时机 | 是否伴随 TSF 事件 | 谁负责把 server 权威态拉回 client LBB |
+|------|---------|------------------|--------------------------------------|
+| vim-im-select | 用户键入 `i/Esc/FocusGained` 等关键事件时 | 是 | 用户下一个 keystroke 自然触发 `WeaselTSF::OnKeyDown` → 从 server 拉 → 刷 LBB |
+| AppIME | 闲置 8 秒定时器 | 否 | 无人触发,需要靠本轮新增的 2 秒定时器主动拉 server 才能刷 |
+
+这也解释了为什么本轮修复要重加 2 秒定时器:它在 AppIME 闲置场景下**扮演 vim-im-select 上下文中"用户的下一次按键"这个角色**,强行让客户端周期性从 server 拉权威态刷 LBB。
+
 ## 首次实施（方向 C）部署后实测：失败
 
 部署 commit `8d3f406` 后测试：AppIME 闲置切换时**光标处状态图标依然显示"中"**，托盘/任务栏正确。
