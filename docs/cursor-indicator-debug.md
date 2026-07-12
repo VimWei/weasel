@@ -719,3 +719,117 @@ Case B — OPENCLOSE **先** 到，im-control ~NATIVE **后** 到：
 | Win11 gvim | 时好时坏 | 仍时好时坏 | 仍时好时坏 | 期望稳定 |
 | Win10 gvim RIME 被禁用 | OK | OK | 回归 | 期望 OK（_SetKeyboardOpen 保底） |
 | 架构原则 | blind toggle（与归档方案冲突） | 同 | 同 | **值驱动 + _isToOpenClose 分支**（与归档方案一致） |
+
+## 七次实施（v6 部署后）：5 个场景测试结果及 v7 修复
+
+v6 部署后 5 个场景测试反馈：
+
+| # | 场景 | 结果 |
+|---|------|------|
+| 1 | Win10 AppME 闲置 8s | ✅ 正确（细节：图标同位置先"中"后"A"闪烁一次，无伤大雅） |
+| 2 | **Win10 gvim insert 英文 → Esc** | ❌ 任务栏输入法指示器显示"禁用"，光标 LBB 隐藏 |
+| 2ndary | Win10 gvim insert 中文 → Esc | ✅ 任务栏"A"，光标 LBB"A" |
+| 3 | Win11 AppME 闲置 8s | ✅ 正确（同 1 的闪烁细节） |
+| 4 | **Win11 gvim Shift 切中文 → <1s Esc** | ✅ 光标 LBB"A" |
+| 4th | **Win11 gvim Shift 切中文 → 2s+ 等待 → Esc** | ❌ 光标 LBB 显示"中" |
+| 5 | Win10/Win11 Shift、Ctrl+Space 等手动 | ✅ 正常 |
+
+两个未完全修复的问题：场景 2（Win10 gvim Esc 后 RIME 被禁用）与场景 4 的"停留 2s+ 再 Esc"分支（Win11 gvim LBB 停留中文）。
+
+### 场景 2 根因：im-control `320d554` 引入 `*` 解引用
+
+追踪 `e951a42`（archive fix 配套的 im-control 修复）原始逻辑：
+
+```cpp
+if (g_isToOpenClose && g_pSharedData->conversionModeNative && !g_pSharedData->keyboardOpenClose) {
+    // 写 OPENCLOSE=1
+}
+```
+
+只检查"用户传了 -c"（has_value），不管传的是 native 还是 alphanumeric。在 Win10 + vim-im-select `im-control -c alphanumeric` 路径上，gvim Esc 关键盘后，im-control hook 重开键盘——这是 archive fix §7 的兜底机制。
+
+commit `320d554`（"fix(hook): add dereference for conversionModeNative check"，2026-07-12）加了 `*g_pSharedData->conversionModeNative`，把 `*` 真值检查加进去——要求用户**显式传 `-c native`（true=Chinese）才重开**，alphanumeric(false=English) 就**不重开**。
+
+这破坏了 archive fix §7 对场景 2 的兜底：
+
+- 用户 insert 英文 → Esc → vim-im-select 调 `im-control -c alphanumeric`
+- im-control 读当前 CONVERSION compartment：`~NATIVE`（英文，与请求一致）→ newMode == oldMode → **跳过 SetValue** → 没有 OnChange → 无人重开 OPENCLOSE
+- Win10 OPENCLOSE if-分支不重开 keyboard（archive fix §5 设计）
+- im-control hook 之前的兜底条件 `*conversionModeNative` 现在为 false（alphanumeric）→ **不重开**
+- OPENCLOSE 留 0 → 任务栏"禁用"
+
+### 场景 2 修复（v7 im-control `0daa450`）
+
+撤下 `320d554` 加的 `*` 解引用，恢复 `e951a42` 原始条件：
+
+```cpp
+if (g_isToOpenClose && g_pSharedData->conversionModeNative && !g_pSharedData->keyboardOpenClose) {
+```
+
+这样 im-control hook 在 Win10 上不论用户传 `-c native` 还是 `-c alphanumeric`，只要 OPENCLOSE 当前 0，都写回 1，重开键盘——匹配 archive fix §7 设计。
+
+能否影响 Win11？Win11 上 `g_isToOpenClose=false`，条件整条短路跳过整个 reopen block。所以此修复仅作用于 Win10。
+
+### 场景 4 hypothesis：RIME server `vim_mode` option 的时序敏感性
+
+观察用户描述：「Shift 切中→ <1s 内 Esc → 正确」「Shift 切中 → 2s+ 等 → Esc → 错误」。
+
+RIME server 的 `RimeWithWeaselHandler::ProcessKeyEvent`（RimeWithWeasel.cpp:264-292）含 server-side `vim_mode` 切英文逻辑：
+
+```cpp
+Bool handled = rime_api->process_key(session_id, keyEvent.keycode, ...);
+// vim_mode when keydown only
+if (!handled && !(keyEvent.mask & ibus::Modifier::RELEASE_MASK)) {
+  bool isVimBackInCommandMode = (keycode == Escape) || Ctrl+C || Ctrl+[;
+  if (isVimBackInCommandMode &&
+      rime_api->get_option(session_id, "vim_mode") &&
+      !rime_api->get_option(session_id, "ascii_mode")) {
+    rime_api->set_option(session_id, "ascii_mode", True);  // 服务端切英文
+  }
+}
+```
+
+若用户 RIME schema 开启了 `vim_mode` option，Esc 时 server 自动切英文。此后 `DoEditSession` 拉到的 `status.ascii_mode=true` → `_status.ascii=true` → `_UpdateLanguageBar` 写 `~NATIVE` → LBB"A"。
+
+为什么 `<1s` 时 case 4 成功，`2s+` 时失败，可能原因：
+
+1. **`handled` 的真值在两次场景中不同**：RIME 内部 `ascii_composer` 对 Shift_L 单键 release 有"lone release" 时间窗。短时间内到达的下一个键（Esc）可能被解释为 Shift 修饰符组合，触发不同的 RIME processor，让 `handled` 在 quick 时为 true（vim_mode 跳过），但 quick 时仍能切英文则是因为别的原因。
+2. **RIME server 的 inline_ascii 模式 pending 状态**：Shift_L release 后 RIME server 可能维持一段时间的 "inline_ascii pending" 状态，在该状态期间 Esc 触发的处理路径不同。
+3. **服务端的 `vim_mode` option 在某种处理后失效**：RIME 经历一轮 process_key 后，某些 option 可能被 schema-processor 重置。
+
+这些假设暂未证实。v7 不能直接修这一 case。建议下一步：
+- 在 `_Respond` 加日志记录 server 返回的 `status.ascii_mode` 真值
+- 用 DebugView 抓 case 4 quick / 2s+ 两次场景的对照日志
+- 确认 `vim_mode` option 在两次场景中是否仍然返回 true
+
+### v7 改动文件清单
+
+| 仓库 | 文件 | 改动 |
+|------|------|------|
+| im-control | `injector/hook.cpp` | OPENCLOSE 重开条件不再 `*conversionModeNative` 解引用，仅检查 has_value |
+| weasel | `docs/cursor-indicator-debug.md` | 本次 v7 section（场景 2 根因 + 场景 4 hypothesis + 修复指引） |
+
+Weasel 端的 v6 改动保留，不撤。AppME 端 v6 修改（`IME_SetEnglishViaF13`）保留。
+
+### v7 部署 / 验证计划
+
+1. 编译 im-control（`C:\Apps\git-kb\repos\VimWei\im-control`）：
+   ```
+   cmake -S . -B build -G "Visual Studio 17 2022"
+   cmake --build build --config RelWithDebInfo
+   cmake --install build --prefix bin --config RelWithDebInfo
+   ```
+2. 把 bin\* 拷到 `C:\Apps\VimReader\lib\utils\im-control\` 覆盖
+3. Weasel 端 v6 部署不变（weasel.dll 不需重新部署）
+4. 重启 gvim.exe（Win10 + Win11）
+5. 复测：
+   - 场景 2：Win10 gvim insert 英文 → Esc → 任务栏应显示"A"（不"禁用"）
+   - 场景 4：Win11 gvim Shift 切中 → 2s+ 等 → Esc → **若仍失败**抓 DebugView 日志，按上面 hypothesis 标注
+6. 主功能回归
+
+### v7 后续方向（场景 4 若仍失败）
+
+- 加日志在 `_Respond` 末尾输出 `status.ascii_mode` 真值
+- 加日志在 `_HandleLangBarMenuSelect` 输出 `m_client.TrayCommand(ENABLE_ASCII)` 是否成功
+- 对比 case 4 quick 与 2s+ 这两次 server 返回的 ascii_mode，找出 RIME server 状态变化点
+- 若证实 RIME server 内部状态变化，可能需要改 RimeWithWeasel.cpp 在 OPENCLOSE OnChange 时主动通知 server "exit_insert → ascii=true"
