@@ -250,6 +250,13 @@ STDAPI CLangBarItemButton::UnadviseSink(DWORD dwCookie) {
 }
 
 void CLangBarItemButton::UpdateWeaselStatus(weasel::Status stat) {
+  {
+    WCHAR buf[160];
+    StringCchPrintfW(buf, 160,
+        L"WTSF_UpdateWeaselStatus: in=%d cur=%d sink=%p",
+        (int)stat.ascii_mode, (int)ascii_mode, _pLangBarItemSink.p);
+    OutputDebugStringW(buf);
+  }
   if (stat.ascii_mode != ascii_mode) {
     ascii_mode = stat.ascii_mode;
   }
@@ -438,6 +445,13 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
     flags |= TF_CONVERSIONMODE_FULLSHAPE;
   else
     flags &= (~TF_CONVERSIONMODE_FULLSHAPE);
+  {
+    WCHAR buf[200];
+    StringCchPrintfW(buf, 200,
+        L"WTSF_UpdateLanguageBar: in ascii=%d full=%d flagsBefore=0x%x LBB=%p",
+        (int)stat.ascii_mode, (int)stat.full_shape, flags, _pLangBarButton.p);
+    OutputDebugStringW(buf);
+  }
   _updatingLanguageBar = true;
   _SetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   _updatingLanguageBar = false;

@@ -185,6 +185,12 @@ STDMETHODIMP WeaselTSF::OnSetThreadFocus() {
   RegGetStringValue(HKEY_CURRENT_USER, L"Software\\Rime\\weasel",
                     L"ToggleImeOnOpenClose", _ToggleImeOnOpenClose);
   _isToOpenClose = (_ToggleImeOnOpenClose == L"yes");
+  {
+    WCHAR buf[128];
+    StringCchPrintfW(buf, 128, L"WTSF_OnSetThreadFocus: isToOpenClose=%d ascii=%d",
+                     (int)_isToOpenClose, (int)_status.ascii_mode);
+    OutputDebugStringW(buf);
+  }
   _ReconcileCompartment();
   if (m_client.Echo()) {
     m_client.ProcessKeyEvent(0);

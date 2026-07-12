@@ -260,8 +260,8 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
       DWORD openVal;
       _GetCompartmentDWORD(openVal, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE);
       WCHAR buf[256];
-      StringCchPrintfW(buf, 256, L"WTSF_OnChange(OPENCLOSE): open=%d _status.ascii=%d LBB=%p",
-                       openVal, _status.ascii_mode, _pLangBarButton.p);
+      StringCchPrintfW(buf, 256, L"WTSF_OnChange(OPENCLOSE): open=%d _status.ascii=%d LBB=%p isToOpenClose=%d",
+                       openVal, _status.ascii_mode, _pLangBarButton.p, (int)_isToOpenClose);
       OutputDebugStringW(buf);
     }
     if (_isToOpenClose) {
@@ -278,6 +278,12 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
       _UpdateLanguageBar(_status);
     } else {
       _status.ascii_mode = !_status.ascii_mode;
+      {
+        WCHAR buf[128];
+        StringCchPrintfW(buf, 128, L"WTSF_OPENCLOSE blind-toggle: new ascii=%d",
+                         (int)_status.ascii_mode);
+        OutputDebugStringW(buf);
+      }
       _SetKeyboardOpen(true);
       if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
         _EnableLanguageBar(true);
