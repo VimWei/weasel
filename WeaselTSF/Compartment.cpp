@@ -264,6 +264,9 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
         _EndComposition(_pEditSessionContext, true);
       }
       _EnableLanguageBar(isOpen);
+      DWORD convFlags;
+      if (SUCCEEDED(_GetCompartmentDWORD(convFlags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION)))
+        _status.ascii_mode = !(convFlags & TF_CONVERSIONMODE_NATIVE);
       _UpdateLanguageBar(_status);
     } else {
       _status.ascii_mode = !_status.ascii_mode;
