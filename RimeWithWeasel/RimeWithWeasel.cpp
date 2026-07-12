@@ -491,7 +491,10 @@ void RimeWithWeaselHandler::SetOption(WeaselSessionId ipc_id,
                                       bool val) {
   // from no-session client, not actual typing session
   if (!ipc_id) {
-    if (m_global_ascii_mode && opt == "ascii_mode") {
+    if (opt == "ascii_mode") {
+      // AppIME / im-control via WeaselServer.exe /ascii always broadcasts to
+      // every session so per-process WeaselTSF instances see the new ascii
+      // state on their next server handshake (periodic timer / focus event).
       for (auto& pair : m_session_status_map)
         rime_api->set_option(to_session_id(pair.first), "ascii_mode", val);
     } else {

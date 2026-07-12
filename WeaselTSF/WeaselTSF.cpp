@@ -223,12 +223,14 @@ BOOL WeaselTSF::_InitDeferredWindow() {
     return FALSE;
   SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)this);
   SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)_DeferredWndProc);
+  SetTimer(hWnd, 1, 2000, NULL);
   _hDeferredMsgWnd = hWnd;
   return TRUE;
 }
 
 void WeaselTSF::_UninitDeferredWindow() {
   if (_hDeferredMsgWnd) {
+    KillTimer(_hDeferredMsgWnd, 1);
     DestroyWindow(_hDeferredMsgWnd);
     _hDeferredMsgWnd = NULL;
   }
@@ -253,7 +255,45 @@ LRESULT CALLBACK WeaselTSF::_DeferredWndProc(HWND hWnd,
     }
     return 0;
   }
+  if (msg == WM_TIMER && wParam == 1) {
+    WeaselTSF* pThis = (WeaselTSF*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+    if (pThis) {
+      pThis->_RefreshStatusFromServer();
+    }
+    return 0;
+  }
   return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+void WeaselTSF::_RefreshStatusFromServer() {
+  if (!m_client.Echo())
+    return;
+
+  WCHAR buf[160];
+  StringCchPrintfW(buf, 160,
+      L"WTSF_RefreshFromServer: tid=%lu _status=%d LBB=%p",
+      GetCurrentThreadId(), _status.ascii_mode, _pLangBarButton.p);
+  OutputDebugStringW(buf);
+
+  weasel::Status prev = _status;
+  m_client.ProcessKeyEvent(0);
+  weasel::ResponseParser parser(NULL, NULL, &_status, NULL, &_cand->style());
+  m_client.GetResponseData(std::ref(parser));
+
+  if (prev.ascii_mode != _status.ascii_mode) {
+    OutputDebugStringW(L"WTSF_RefreshFromServer: change detected, updating LBB");
+    _UpdateLanguageBar(_status);
+    {
+      auto snap = Weasel_SnapshotInstances();
+      for (auto* other : snap) {
+        if (other == this)
+          continue;
+        if (HWND h = other->_GetDeferredWnd())
+          PostMessage(h, WM_APP + 101,
+                      (WPARAM)(_status.ascii_mode ? 1 : 0), 0);
+      }
+    }
+  }
 }
 
 void WeaselTSF::_OnRemoteAsciiChange(bool ascii) {

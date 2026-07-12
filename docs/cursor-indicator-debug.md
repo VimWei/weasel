@@ -204,3 +204,102 @@ snapshot 持锁瞬取，循环不持锁，`PostMessage` 异步，对已 `Deactiv
 - **方向 A（im-control 枚举全部线程写 compartment）**：能补 compartment 同步，但解决不了"接收方 RIME session 仍未切"，且跨线程注入复杂、风险高
 - **方向 B（im-control 广播自定义窗口消息）**：message-only 窗口收不到顶层广播，WeaselTSF 现成无任何自定义消息入口，新增面比方向 C 大
 - **只刷 LBB 不切 RIME session**：等价于把归档修复"撤销外部变更"旧 bug 在新层面复现，明确拒绝
+
+## 首次实施（方向 C）部署后实测：失败
+
+部署 commit `8d3f406` 后测试：AppIME 闲置切换时**光标处状态图标依然显示"中"**，托盘/任务栏正确。
+
+### 日志（部署后）
+
+`docs/debugview/VIMELNUC02.log`（2026-07-12 二次部署后捕获）：
+
+```
+t=0.00   PID 4504  OnChange(_updating=1 asc=0)         ← 4504 自写
+t=10.10  PID 4504  Reconcile(_status=0 comp=0)          ← 4504 焦点切换
+t=12.41  PID 8784  Reconcile(_status=1 comp=1)          ← 8784 焦点切换
+t=12.41  PID 8784  OnChange(_updating=1 asc=1)           ← _UpdateLanguageBar(asc=1)
+t=14.48  PID 8784  OnChange(_updating=1 asc=1)
+t=14.59  PID 8784  OnChange(_updating=1 asc=0)          ← _UpdateLanguageBar(asc=0)
+t=23.07  PID 8784  OnChange(_updating=0 asc=0)          ← 外部 compartment 写入
+t=23.07  PID 8784  WTSF_Broadcast: ascii=1 self=10168   ← 进入广播分支（self=TID 10168）
+t=35.44  PID 4504  Reconcile(_status=0 comp=0)          ← 4504 仍 _status=0
+```
+
+### 新诊断：跨进程，不是跨线程
+
+DebugView 第三列为 PID（含 `self=` 行给出 TID 区分提示）。4504 / 8784 / 10168 不是同进程不同线程，而是**承载 IME 的多个进程**：Windows Terminal 与 conhost/OpenConsole 各自加载一份 `weasel.dll`，每个进程维护各自的 `g_weaselInstances`。
+
+进程内实例注册表 + `PostMessage(WM_APP+101)` 只能命中同进程其它线程的 WeaselTSF。光标所在的 LBB 若长在另一进程里，永远不会被本次广播触及。日志中 4504 全程没有 `WTSF_OnRemoteAscii`，证实跨进程同步缺失。
+
+> 注：上次决定"去掉定时器，只靠广播"基于"广播能覆盖所有线程"的假设。实测推翻——单进程内广播够不到其它进程的 WeaselTSF 实例。需要换路径。
+
+## 二次实施：Server 广播 + 客户端 2 秒周期拉取权威态
+
+借道 WeaselServer——每个 WeaselTSF 的 `m_client` 已经与 server 维持独立 pipe session，server 是所有 session 的 hub。配合两条改动即可跨进程同步所有 cursor LBB：
+
+### 改动 A（Server）：`SetOption(0, "ascii_mode", val)` 一律广播到全部 session
+
+**文件：** `RimeWithWeasel/RimeWithWeasel.cpp` 的 `RimeWithWeaselHandler::SetOption`。
+
+原代码：
+
+```cpp
+if (!ipc_id) {
+  if (m_global_ascii_mode && opt == "ascii_mode") {
+    for (auto& pair : m_session_status_map)
+      rime_api->set_option(to_session_id(pair.first), "ascii_mode", val);
+  } else {
+    rime_api->set_option(to_session_id(m_active_session), opt.c_str(), val);
+  }
+}
+```
+
+改：`opt == "ascii_mode"` 的无 session 写入**一律**广播到全部 session，不再依赖 `m_global_ascii_mode`。AppIME 已在每次 compartment 写后调用 `WeaselServer.exe /ascii`，会经此路径广播到所有 RIME session 的 ascii_mode 服务端权威态。
+
+### 改动 B（Client）：2 秒周期 timer 拉 server 权威态，刷本地 LBB
+
+**文件：** `WeaselTSF/WeaselTSF.cpp`。重加 `_InitDeferredWindow` 的 `SetTimer(hWnd, 1, 2000, NULL)`、`_UninitDeferredWindow` 的 `KillTimer`、`_DeferredWndProc` 的 `WM_TIMER` 分支——但**语义不再是本地 compartment reconciliation**，而是仿照 `OnSetThreadFocus` 的"握手"：
+
+```cpp
+if (m_client.Echo()) {
+  m_client.ProcessKeyEvent(0);
+  weasel::ResponseParser parser(NULL, NULL, &_status, NULL, &_cand->style());
+  m_client.GetResponseData(std::ref(parser));
+}
+_UpdateLanguageBar(_status);
+```
+
+每个 WeaselTSF 实例无论属于哪个进程，只要有 thread focus 都会每 2 秒向 server 拉一次权威态，写本地 compartment + 刷 LBB。失焦的旧 cursor 线程在没 focus 时不会刷——但只要 server 已通过 A 把该 session 切成 ascii，下次它拿到 focus 或下个按键就会立刻 sync。最坏有 2 秒延迟（focus 间隔的 LBB 残影几乎不可见，因为派给 LBB 渲染的就是当前 focus 线程）。
+
+新增私有方法 `_RefreshStatusFromServer()` 封装上述握手序列。
+
+### 改动 C：保留上次的进程内广播
+
+不撤回方向 C 的 5 文件改动——同进程多线程场景（如 conhost 前台 thread + ME 自身 thread）仍能受益，与改动 B 叠加不冲突（幂等）。
+
+### 改动文件清单（v2）
+
+| 文件 | 改动 |
+|------|------|
+| `RimeWithWeasel/RimeWithWeasel.cpp` | `SetOption(0, "ascii_mode", val)` 一律广播 |
+| `WeaselTSF/WeaselTSF.h` | 新增私有 `void _RefreshStatusFromServer();` |
+| `WeaselTSF/WeaselTSF.cpp` | 重加 SetTimer/KillTimer；`_DeferredWndProc` 的 `WM_TIMER` 改调 `_RefreshStatusFromServer`；实现新方法 |
+
+### 安全性原则
+
+- **OPENCLOSE handler / `_isToOpenClose` 分歧完全不受影响**
+- **`global_ascii` 用户配置的语义不变**：只放宽无 session 调用对 ascii_mode 的广播。其余 option 仍按原逻辑只切 active session 或读 global_ascii
+- **客户端 timer 是 server 权威态拉取**而非本地 reconcilation——`_UpdateLanguageBar` 已有 `_updatingLanguageBar` 防递归守卫，`ProcessKeyEvent(0)` 是 no-op 不入队字符。幂等
+- **AppIME 调用流程不变**：`im-control -c alphanumeric` + `WeaselServer /ascii` 保持原样，行为只变好不变坏
+- **per-process 进程内广播（v1 残留）与跨进程 server 拉取叠加**：两路互相补漏，互不破坏（幂等）
+
+### 验证计划（v2）
+
+1. 编译：`build.bat weasel release`
+2. 部署：覆盖 system32 / SysWOW64 weasel.dll，**同时部署新编译的 WeaselServer.exe**（本次改了 RimeWithWeasel 编进 server 端）
+3. 重启所有 RIME 宿主进程；如可重启 WeaselServer.exe
+4. 复现场景：AppIME 8s 自动切英文
+   - 期望：光标处 LBB 在 ≤2 秒内同步显示"A"
+5. DebugView 关键日志：每 2 秒应见各 PID 的 `WTSF_RefreshFromServer`（待加），server 端 `_Respond` 内按 `global_ascii` 已存在的 `set_option` 广播路径命中所有 session
+6. 主功能回归：手动 Shift、Ctrl+Space、gvim i/ESC、Windows Terminal 焦点进出均正常；不做手动切换时无异常刷新（_UpdateLanguageBar 比对 _status 与 server 一致)
+7. 性能观察：每 2 秒/实例的 no-op ProcessKeyEvent(0) 流量可接受（< 4 字节 pipe transact * 3 个进程 = 总 ~12B/2s）
