@@ -551,3 +551,171 @@ v5 状态 = `830eb55` + v3 VimReader AppME Shift 路径。`v3 AppME` 在 AppME �
 - **假设**：`8d3f406` 的进程内广播在 gvim 单进程内虽无实际同步对象可发，但 `EnterCriticalSection` + `vector` snapshot + 循环本身可能引入一次额外的延迟和锁竞争，对照 `830eb55` 不存在该路径
 - **风险**：若 v5 仍不稳定，则根因不在此，问题在原始 OPENCLOSE 盲 toggle 与 im-control CONVERSION 写入的 race；届时需要进一步回退或重新设计 OPENCLOSE else 分支行为
 - **不撤 v3 VimReader 修改**：AppME Send Shift 路径与 weasel 端正交
+
+## 六次实施（v5 部署后）：Win11 gvim 仍不稳定 + Win10 gvim 出现 RIME 被禁用回归
+
+v5 (`38a5fcc`) 部署后实测：
+- **Win11 gvim** 仍"时好时坏"，没有改善
+- **Win10 gvim** 出现 **RIME 被禁用**回归——这是归档文档 `compartment-external-control-fix.md` §5 早已解决的问题，说明 v3-v5 的演进破坏了归档方案的某条保护
+
+### 用户洞察：方案选错方向
+
+用户指出：
+1. 归档方案 `compartment-external-control-fix.md` 用"**值驱动 + `_isToOpenClose` 分支**"解决 Win10/Win11 gvim RIME 被禁用问题
+2. 但我们 v3 引入的"AppME Send Shift"路径本质上是 **blind toggle**——与归档方案"值驱动"原则**完全对立**
+3. v3 的 Shift 方案虽修复了 AppME 闲置场景，但破坏了归档方案的对称性，造成"顾此失彼"
+
+### 真正根因：OPENCLOSE else 分支的盲 toggle + _UpdateLanguageBar 写回
+
+仔细 trace `VIMELNUC04.log` 的每次 gvim Esc/i：
+
+```
+t=X.X  WTSF_OPENCLOSE blind-toggle: new ascii=0    ← OPENCLOSE OnChange else 分支盲 toggle 1→0
+t=X.Y  WTSF_Broadcast: ascii=1                      ← 之后 im-control ~NATIVE 触发 CONVERSION OnChange mismatch，_status 0→1
+```
+
+**两条 OnChange 之间的到达顺序不确定 → race**：
+
+| 时序 | 结果 |
+|------|------|
+| im-control ~NATIVE **先** 到达 → OPENCLOSE **后** 到达 | im-control 把 `_status=1`、LBB=A。OPENCLOSE else 分支盲 toggle `_status=1→0`，调 `_UpdateLanguageBar(ascii=0)` 写 compartment=NATIVE on **覆盖** im-control 的 ~NATIVE。LBB 刷中文。**没有后续 OnChange 纠回（compartment 值没新变化）→ 死锁中文** ❌ |
+| OPENCLOSE **先** 到达 → im-control ~NATIVE **后** 到达 | OPENCLOSE 盲 toggle `_status→0`、写 NATIVE on。im-control 写 ~NATIVE 触发 mismatch，`_status=1`、LBB=A ✓ |
+
+这就是"时好时坏"！完全与归档文档 §1 描述的"撤销外部变更"旧 bug 同型。
+
+### 归档方案为什么没修这个
+
+归档方案 §1-§8 全部改 **CONVERSION handler**，没动 OPENCLOSE else 分支。OPENCLOSE else 分支的盲 toggle + `_UpdateLanguageBar` 写回是历史遗留代码，与"值驱动"原则对立。当时 Win11 gvim 不稳定的 race 在归档方案阶段没暴露，是因为：
+- 归档方案 §5 让 CONVERSION handler 在 `_isToOpenClose=true` 时调 `_SetKeyboardOpen(true)` 重开键盘。这避免了 Win10 gvim ESC 关键盘后无人重开。
+- 但 OPENCLOSE else 分支（`_isToOpenClose=false` 即 Win11）的盲 toggle + _UpdateLanguageBar 写回未被审查
+
+v5 的 v3 VimReader Send Shift 只是叠加了 AppME 闲置场景的修复，**没改 OPENCLOSE else 分支**——这是 race 始终存在的根源。
+
+### v6 方案：值驱动贯彻到 OPENCLOSE else 分支 + AppME 改用 im-control + F13
+
+用户洞察"**类似 F13 等不存在的按键 + 值驱动 + `_isToOpenClose` 分支**"给出正确方向。两条改动：
+
+**改动 A（WeaselTSF/Compartment.cpp OPENCLOSE else 分支）**——彻底贯彻值驱动：
+
+```cpp
+} else {
+  _SetKeyboardOpen(true);                                          // 保底重开键盘（归档方案 §5）
+  if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
+    _EnableLanguageBar(true);
+  DWORD convFlags;
+  if (SUCCEEDED(_GetCompartmentDWORD(convFlags,
+                                      GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION))) {
+    bool desiredAscii = !(convFlags & TF_CONVERSIONMODE_NATIVE);   // 值驱动
+    if (desiredAscii != _status.ascii_mode) {
+      _status.ascii_mode = desiredAscii;                           // 同步 state，不盲 toggle
+      if (_pEditSessionContext)
+        m_client.ClearComposition();
+      if (_pLangBarButton)
+        _pLangBarButton->UpdateWeaselStatus(_status);             // 只刷 LBB
+    }
+  }
+  // **不调 _UpdateLanguageBar，不写 CONVERSION compartment** —— 避免覆盖 im-control 写入
+  // **不调 _HandleLangBarMenuSelect** —— RIME session 切换由 CONVERSION OnChange 处理
+}
+```
+
+关键改动 vs 原代码：
+- 删 `_status.ascii_mode = !_status.ascii_mode`（盲 toggle）
+- 删 `_HandleLangBarMenuSelect(...)`（让 CONVERSION handler 独自拥有 RIME session 切换权）
+- 删 `_UpdateLanguageBar(_status)`（避免写 compartment 覆盖外部）
+- 加 `_GetCompartmentDWORD` + `_status` 同步（值驱动）
+- 加 `_pLangBarButton->UpdateWeaselStatus` 刷 LBB
+- 保留 `_SetKeyboardOpen(true)` 重开键盘（归档方案 §5 保底，防止 gvim 关键盘后 RIME 被禁用）
+
+**改动 B（VimReader IME.ahk + AppIME.ahk）**——AppME 用 im-control + F13 替换 Send Shift：
+
+```ahk
+IME_SetEnglishViaF13() {
+    IME_SetAlphanumeric()                        ; im-control -c alphanumeric + WeaselServer /ascii
+                                                 ; 写 CONVERSION compartment ~NATIVE
+                                                 ; server 切前台 session ascii_mode=true（值驱动）
+    Sleep(20)
+    Send("{F13 down}")                            ; 触发前台 WeaselTSF::OnKeyDown
+    Sleep(10)                                     ; → ProcessKeyEvent(F13) → server 不识别
+    Send("{F13 up}")                              ;                            但返回 status.ascii_mode=true
+                                                 ; → DoEditSession → GetResponseData
+                                                 ; → _UpdateLanguageBar → LBB 刷 A
+}
+```
+
+为什么 F13 不是 Shift：
+- Shift 被 RIME `ascii_composer` 解释为 toggle 信号 → RIME server 状态被盲 toggle（导致 directional 不可控）
+- F13 不被 RIME 处理 → server 状态保持 im-control 写入的值（值驱动）
+- F13 走 keystroke path 触发 `DoEditSession` 拉权威态刷 LBB（同步）
+
+### v6 改动文件清单
+
+| 端 | 文件 | 改动 |
+|------|------|------|
+| Weasel | `WeaselTSF/Compartment.cpp` | OPENCLOSE else 分支重写为值驱动 |
+| AppME | `C:\Apps\VimReader\lib\utils\IME.ahk` | `IME_SetEnglishViaShift` 重命名为 `IME_SetEnglishViaF13`，体改为 im-control + F13 |
+| AppME | `C:\Apps\VimReader\lib\system\AppIME.ahk` | 调用点改用 `IME_SetEnglishViaF13`，更新文档说明 |
+
+### v6 时序分析（验证 race 是否根治）
+
+**gvim Esc 时场景**（_isToOpenClose=false，Win11）：
+
+Case A — im-control ~NATIVE **先** 到，OPENCLOSE **后** 到：
+1. im-control 写 compartment = ~NATIVE → OnChange(CONVERSION) → _HandleCompartment(CONVERSION)
+   - _status.ascii=1 (insert 时状态)
+   - convMode = ~NATIVE, desiredAscii=true
+   - desiredAscii(1) != _status(1)? **不真** → 进 else 分支（无操作）
+   - LBB 保持 A
+2. gvim 写 OPENCLOSE=0 → OnChange(OPENCLOSE) → _isToOpenClose=false → else 分支
+   - _SetKeyboardOpen(true)（重开键盘）
+   - 读 convFlags = ~NATIVE, desiredAscii=true
+   - desiredAscii(1) != _status(1)? **不真**（im-control 已让 _status=1）→ 无 mismatch
+   - **不写 compartment、不切 RIME** → LBB 保持 A ✓
+
+Case B — OPENCLOSE **先** 到，im-control ~NATIVE **后** 到：
+1. gvim 写 OPENCLOSE=0 → OnChange(OPENCLOSE) → else 分支
+   - _SetKeyboardOpen(true)
+   - 读 convFlags = 当前 compartment 状态（insert 模式时可能是 NATIVE on 中文 或 ~NATIVE 英文，取决于 insert 时状态）
+   - 假设 insert 时是英文：convFlags=~NATIVE, desiredAscii=1, _status=1 → 一致 → 无操作
+   - 假设 insert 时是中文：convFlags=NATIVE on, desiredAscii=0, _status=0 → 一致 → 无操作
+   - **不写 compartment**
+2. im-control 写 ~NATIVE → OnChange(CONVERSION)（值变 true）→ mismatch 处理
+   - 读 convMode=~NATIVE, desiredAscii=true
+   - _status.ascii=1 → 一致（compartment 同步了）→ 无 mismatch 无操作
+
+无论顺序如何，都不能产生死锁 race。✓
+
+**AppME 闲置 8s 触发**：
+1. AppME 调 `IME_SetAlphanumeric` → im-control 写 ~NATIVE + WeaselServer /ascii 切 server session
+2. AppME `Sleep(20)` 等 im-control 完成
+3. AppME `Send {F13}` → 前台 WeaselTSF::OnKeyDown → ProcessKeyEvent → server 不响应但回 status.ascii=true → DoEditSession → _status.ascii=true → _UpdateLanguageBar → LBB 刷 A ✓
+
+### v6 安全性原则
+
+- **Win10 gvim RIME 被禁用不再回归**：OPENCLOSE else 分支保留 `_SetKeyboardOpen(true)` 这条保底（归档方案 §5）
+- **值驱动贯彻到 OPENCLOSE else 分支**：不再盲 toggle _status；不再 _UpdateLanguageBar 写回 compartment；不再 _HandleLangBarMenuSelect 切 RIME。RIME session 切换由 CONVERSION handler 单独负责
+- **AppME 不引入 blind toggle**：F13 不被 RIME 处理，server session 状态只受 im-control 操作
+- **Ctrl+Space 主功能不受影响**：Ctrl+Space 触发 OPENCLOSE OnChange，else 分支读 CONVERSION 同步 _status，**不切 RIME ascii_mode**——这正是用户期待（Ctrl+Space 切 IME 开关，不应改 RIME ascii_mode）
+- **手动 Shift 主功能不受影响**：Shift 触发 OnKeyDown → RIME ascii_composer server 端 toggle → DoEditSession 拉 status → _UpdateLanguageBar 写 compartment → OnChange(CONVERSION) → _HandleCompartment(CONVERSION) 走值驱动分支同步 _status,刷 LBB
+
+### v6 验证计划
+
+1. 编译：`build.bat weasel release`
+2. 部署：覆盖 system32 / SysWOW64 的 weasel.dll；WeaselServer.exe 无需重新部署
+3. 重启 gvim.exe（Win10/Win11）、Windows Terminal、Total Commander 等所有 RIME 宿主
+4. 重新加载 VimReader AHK 脚本（让 `IME_SetEnglishViaF13` 生效）
+5. 复现场景：
+   - gvim Win11 i/Esc 模式切换，重复 10+ 次，**期望稳定显 A**
+   - gvim Win10 i/Esc 模式切换，**期望不出现 RIME 被禁用**
+   - AppME 闲置 8s（Win10/Win11），**期望光标 LBB 显 A**
+6. 主功能回归：手动 Shift、Ctrl+Space、Windows Terminal 焦点切换均正常
+
+### v3-v6 演进对照
+
+| 项 | v3 (Shift) | v4 (+timer) | v5 (-broadcast) | v6 (F13 + 值驱动 OPENCLOSE) |
+|----|------------|-------------|------------------|------------------------------|
+| AppME 同步机理 | RIME blind toggle by Shift | + 2s 本地 reconcile 兜底 | 同 v4（清理 v1 broadcast） | im-control -c（值驱动）+ F13 keystroke path 同步 |
+| OPENCLOSE else 分支 | 盲 toggle + _UpdateLanguageBar（race 源） | 同 v3 | 同 v3 | **值驱动**——读 compartment 同步 _status，不盲 toggle，不写回 |
+| Win11 gvim | 时好时坏 | 仍时好时坏 | 仍时好时坏 | 期望稳定 |
+| Win10 gvim RIME 被禁用 | OK | OK | 回归 | 期望 OK（_SetKeyboardOpen 保底） |
+| 架构原则 | blind toggle（与归档方案冲突） | 同 | 同 | **值驱动 + _isToOpenClose 分支**（与归档方案一致） |

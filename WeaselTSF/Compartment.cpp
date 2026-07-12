@@ -269,16 +269,21 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
         _status.ascii_mode = !(convFlags & TF_CONVERSIONMODE_NATIVE);
       _UpdateLanguageBar(_status);
     } else {
-      _status.ascii_mode = !_status.ascii_mode;
       _SetKeyboardOpen(true);
       if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
         _EnableLanguageBar(true);
-      _HandleLangBarMenuSelect(_status.ascii_mode
-                                   ? ID_WEASELTRAY_ENABLE_ASCII
-                                   : ID_WEASELTRAY_DISABLE_ASCII);
-      if (_pEditSessionContext)
-        m_client.ClearComposition();
-      _UpdateLanguageBar(_status);
+      DWORD convFlags;
+      if (SUCCEEDED(_GetCompartmentDWORD(convFlags,
+                                          GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION))) {
+        bool desiredAscii = !(convFlags & TF_CONVERSIONMODE_NATIVE);
+        if (desiredAscii != _status.ascii_mode) {
+          _status.ascii_mode = desiredAscii;
+          if (_pEditSessionContext)
+            m_client.ClearComposition();
+          if (_pLangBarButton)
+            _pLangBarButton->UpdateWeaselStatus(_status);
+        }
+      }
     }
   } else if (IsEqualGUID(guidCompartment,
                          GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION)) {
