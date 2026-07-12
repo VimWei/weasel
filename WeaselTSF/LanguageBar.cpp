@@ -250,13 +250,6 @@ STDAPI CLangBarItemButton::UnadviseSink(DWORD dwCookie) {
 }
 
 void CLangBarItemButton::UpdateWeaselStatus(weasel::Status stat) {
-  {
-    WCHAR buf[160];
-    StringCchPrintfW(buf, 160,
-        L"WTSF_UpdateWeaselStatus: in=%d cur=%d sink=%p",
-        (int)stat.ascii_mode, (int)ascii_mode, _pLangBarItemSink.p);
-    OutputDebugStringW(buf);
-  }
   if (stat.ascii_mode != ascii_mode) {
     ascii_mode = stat.ascii_mode;
   }
@@ -268,6 +261,11 @@ void CLangBarItemButton::UpdateWeaselStatus(weasel::Status stat) {
   }
   if (_pLangBarItemSink) {
     _pLangBarItemSink->OnUpdate(TF_LBI_STATUS | TF_LBI_ICON);
+  } else {
+    WCHAR buf[128];
+    StringCchPrintfW(buf, 128, L"WTSF_UpdateWeaselStatus: SKIP sink=NULL in=%d cur=%d",
+                     (int)stat.ascii_mode, (int)ascii_mode);
+    OutputDebugStringW(buf);
   }
 }
 
@@ -410,25 +408,17 @@ void WeaselTSF::_ReconcileCompartment() {
   DWORD flags;
   _GetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   bool compartmentAscii = !(flags & TF_CONVERSIONMODE_NATIVE);
-  WCHAR buf[256];
-  if (_pLangBarButton) {
-    StringCchPrintfW(buf, 256, L"WTSF_Reconcile: _status=%d compartment=%d LBB=%p",
+  if (compartmentAscii != _status.ascii_mode) {
+    WCHAR buf[256];
+    StringCchPrintfW(buf, 256, L"WTSF_Reconcile MISMATCH: _status=%d compartment=%d LBB=%p",
                      _status.ascii_mode, compartmentAscii, _pLangBarButton.p);
     OutputDebugStringW(buf);
-  } else {
-    StringCchPrintfW(buf, 256, L"WTSF_Reconcile: _status=%d compartment=%d LBB=NULL",
-                     _status.ascii_mode, compartmentAscii);
-    OutputDebugStringW(buf);
-  }
-  if (compartmentAscii != _status.ascii_mode) {
-    OutputDebugStringW(L"WTSF_Reconcile: MISMATCH detected");
     _status.ascii_mode = compartmentAscii;
     _HandleLangBarMenuSelect(compartmentAscii
                                  ? ID_WEASELTRAY_ENABLE_ASCII
                                  : ID_WEASELTRAY_DISABLE_ASCII);
     if (_pLangBarButton) {
       _pLangBarButton->UpdateWeaselStatus(_status);
-      OutputDebugStringW(L"WTSF_Reconcile: UpdateWeaselStatus called");
     }
   }
 }
@@ -445,13 +435,6 @@ void WeaselTSF::_UpdateLanguageBar(weasel::Status stat) {
     flags |= TF_CONVERSIONMODE_FULLSHAPE;
   else
     flags &= (~TF_CONVERSIONMODE_FULLSHAPE);
-  {
-    WCHAR buf[200];
-    StringCchPrintfW(buf, 200,
-        L"WTSF_UpdateLanguageBar: in ascii=%d full=%d flagsBefore=0x%x LBB=%p",
-        (int)stat.ascii_mode, (int)stat.full_shape, flags, _pLangBarButton.p);
-    OutputDebugStringW(buf);
-  }
   _updatingLanguageBar = true;
   _SetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   _updatingLanguageBar = false;

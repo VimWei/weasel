@@ -256,14 +256,6 @@ void WeaselTSF::_UninitCompartment() {
 
 HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
   if (IsEqualGUID(guidCompartment, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)) {
-    {
-      DWORD openVal;
-      _GetCompartmentDWORD(openVal, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE);
-      WCHAR buf[256];
-      StringCchPrintfW(buf, 256, L"WTSF_OnChange(OPENCLOSE): open=%d _status.ascii=%d LBB=%p isToOpenClose=%d",
-                       openVal, _status.ascii_mode, _pLangBarButton.p, (int)_isToOpenClose);
-      OutputDebugStringW(buf);
-    }
     if (_isToOpenClose) {
       BOOL isOpen = _IsKeyboardOpen();
       // clear composition when close keyboard
@@ -280,8 +272,8 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
       _status.ascii_mode = !_status.ascii_mode;
       {
         WCHAR buf[128];
-        StringCchPrintfW(buf, 128, L"WTSF_OPENCLOSE blind-toggle: new ascii=%d",
-                         (int)_status.ascii_mode);
+        StringCchPrintfW(buf, 128, L"WTSF_OPENCLOSE blind-toggle: new ascii=%d LBB=%p",
+                         (int)_status.ascii_mode, _pLangBarButton.p);
         OutputDebugStringW(buf);
       }
       _SetKeyboardOpen(true);
@@ -296,12 +288,6 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
     }
   } else if (IsEqualGUID(guidCompartment,
                          GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION)) {
-    {
-      WCHAR buf[256];
-      StringCchPrintfW(buf, 256, L"WTSF_OnChange(CONVERSION): _updatingLangBar=%d _status.ascii=%d LBB=%p",
-                       _updatingLanguageBar, _status.ascii_mode, _pLangBarButton.p);
-      OutputDebugStringW(buf);
-    }
     if (_updatingLanguageBar) {
       return S_OK;
     }
