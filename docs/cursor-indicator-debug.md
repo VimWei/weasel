@@ -95,3 +95,112 @@ im-control 写完 compartment 后，使用 `RegisterWindowMessage` + `SendMessag
 | `_HandleCompartment(OPENCLOSE)` 入口 | `WTSF_OnChange(OPENCLOSE)` | 确认 open/close 触发 |
 | `_HandleCompartment(CONVERSION)` 入口 | `WTSF_OnChange(CONVERSION)` | 确认 conversion 跨线程触发 |
 | `_ReconcileCompartment` | `WTSF_Reconcile` | 检查 `_pLangBarButton` 状态和 mismatch |
+
+## 关键补充事实（2026-07-12 二轮代码复核）
+
+原根因分析正确，但漏掉两个关键事实，影响修复方案：
+
+### 补充事实甲：每条线程是独立 RIME session
+
+每个 WeaselTSF 实例的 `m_client` 与 WeaselServer 之间是**独立 session**。
+`ClientImpl::TrayCommand(menuId)` 携带 `session_id` 作 lParam → ServerImpl::OnCommand → `RimeWithWeaselHandler::SetOption(lParam, ...)` → 命中 else 分支 → **只切当前 session 的 ascii_mode**。
+
+→ 12864 上的 `_HandleCompartment(CONVERSION)` 调用 `_HandleLangBarMenuSelect(ID_WEASELTRAY_ENABLE_ASCII)` 只切 12864 自己的 RIME session。8868/9332 的 RIME 后端状态不会跟随切换。
+
+### 补充事实乙：WeaselServer /ascii 不保证广播
+
+AppIME 在写完 compartment 后调用 `WeaselServer.exe /ascii`（IME.ahk）。这是无 session 客户端（`ipc_id=0`）。`RimeWithWeaselHandler::SetOption` 的 `if (!ipc_id)` 分支：**仅当 `global_ascii` 配置为 true 时**才广播到全部 session（RimeWithWeasel.cpp:494-496）。
+
+→ 默认配置下不能用 `WeaselServer /ascii` 兜底 RIME 后端同步。
+
+### 修复必须同时解决的三件事
+
+| # | 要解决的同步 | 只刷 LBB 不切 session 的后果 |
+|---|-------------|----------------------|
+| 1 | 8868/9332 的 `_status.ascii_mode` | 0 → 下次按键被响应器改回 |
+| 2 | 8868/9332 的 `_pLangBarButton` 图标 | 仍是"中"（当前问题） |
+| 3 | 8868/9332 自己 RIME session 的 ascii_mode | 仍是中文 → 下次按键 `_UpdateLanguageBar` 把 compartment 回写为 0、LBB 被静默翻回"中"（与归档文档"撤销外部变更"旧 bug 同型） |
+
+只刷 2 不刷 3 = 在新层面复现"撤销外部变更"旧 bug。明确拒绝。
+
+## 实施方案：方向 C —— Weasel 进程内广播（不动 im-control）
+
+让 12864 的 `_HandleCompartment(CONVERSION)` 检测到外部驱动的 ascii 翻转后，向同进程其他 WeaselTSF 实例的 `_hDeferredMsgWnd` 投递自定义消息 `WM_APP+101`，由对方在自己线程的消息泵里原样重放"切换"动作。1/2/3 三件事一次解决。
+
+### 复用现成零件
+
+- `_hDeferredMsgWnd`（WeaselTSF.cpp ActivateEx 段）：每个实例已有一个 message-only 隐藏窗口
+- `_DeferredWndProc`（WeaselTSF.cpp）：原有 `WM_APP+100` 分支，新增 `WM_APP+101`（`WM_TIMER` 分支已删除，见下文"定时器决策"）
+- `g_cs`（Globals.cpp）：现成全局 CRITICAL_SECTION，作实例注册表锁
+- `_HandleLangBarMenuSelect(ID_WEASELTRAY_*_ASCII)` + `_UpdateLanguageBar(_status)`：CONVERSION handler 末尾的现成动作，接收方按原顺序复用
+
+### 改动文件清单
+
+| 文件 | 改动 |
+|------|------|
+| `WeaselTSF/Globals.h` | 新增 `WeaselTSF*` 实例注册表声明与访问函数 |
+| `WeaselTSF/Globals.cpp` | 实例注册表实现，复用 `g_cs` |
+| `WeaselTSF/WeaselTSF.h` | 暴露 `_GetDeferredWnd()`；新增 `_OnRemoteAsciiChange(bool)` |
+| `WeaselTSF/WeaselTSF.cpp` | `ActivateEx/Deactivate` 注册/注销；`_DeferredWndProc` 新增 `WM_APP+101`；新增 `_OnRemoteAsciiChange`；**移除 2s `SetTimer` 与 `WM_TIMER` 分支** |
+| `WeaselTSF/Compartment.cpp` | `_HandleCompartment(CONVERSION)` 外部驱动翻转分支末尾向其他实例 `PostMessage(WM_APP+101, ascii, 0)` |
+
+### 安全性原则（与归档 compartment-external-control-fix.md 同）
+
+- **OPENCLOSE handler 零改动**：Shift / Ctrl+Space 主功能不受影响
+- **不动 `_isToOpenClose` 分歧**：广播的是目标 ascii 值；OPENCLOSE 维度处理逻辑未触
+- **幂等三重保险**：
+  - 发起方：`_updatingLanguageBar` 守卫保留；本线程 OnChange 回路命中 else 不动作
+  - 接收方：`if (_status.ascii_mode == ascii) return;` 早退
+  - 接收方写本线程 compartment 后，本线程 OnChange 同样命中 else 早退
+- **跨线程安全**：所有 RIME session 调用、compartment 读写、LBB UI 调用在对方线程的消息泵里执行，无锁、无重入。注册表 `g_cs` 仅在 `push/erase/snapshot` 瞬间持锁
+- **不动 im-control / 不动 WeaselServer IPC**：与现有 AppIME 流程完全兼容
+- **deactivate 安全**：`Deactivate` 先 `Weasel_UnregisterInstance(this)` 再销毁窗口，避免 use-after-free
+
+### 定时器决策
+
+**去掉 2s `SetTimer` 与 `WM_TIMER` 分支**，只靠广播。broadcast-first：
+- `_ReconcileCompartment` 函数仍保留（`OnSetThreadFocus` 还在调用），只是不再被定时器周期触发
+- 保留 `WM_APP+100` 备路（`_HandleCompartment` 末段仍会 Post 给自己），属于同步路径的兜底，与 `WM_APP+101` 跨线程广播互补
+
+### 接收方动作时序（_OnRemoteAsciiChange）
+
+与发起方 `_HandleCompartment(CONVERSION)` 外部驱动分支同顺序，幂等早退为先：
+
+1. 调试日志，`if (_status.ascii_mode == ascii) return;` 幂等早退
+2. `_status.ascii_mode = ascii;`
+3. `if (_isToOpenClose && !_IsKeyboardOpen()) _SetKeyboardOpen(true);` 保底重开键盘（与归档修复"_isToOpenClose=true 时双重保底"原则一致）
+4. `if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled()) _EnableLanguageBar(true);`
+5. `_HandleLangBarMenuSelect(...)` 通知本线程 RIME session 切 ascii（解决补充事实甲/乙）
+6. `if (_pEditSessionContext) m_client.ClearComposition();`
+7. `_UpdateLanguageBar(_status)`：内部按 `_status` 调整本线程 compartment flags、`_updatingLanguageBar=true` 守卫下写 compartment、再 `_pLangBarButton->UpdateWeaselStatus(_status)` 刷图标。本线程 OnChange 在守卫期返回 S_OK，守卫结束后命中 else 不动作 → 不递归、不再广播
+
+### 发起方动作时序（_HandleCompartment CONVERSION 外部驱动分支末尾）
+
+在已有 `_pLangBarButton->UpdateWeaselStatus(_status);` 之后：
+
+```cpp
+auto snap = Weasel_SnapshotInstances();
+for (auto* other : snap) {
+  if (other == this) continue;            // 自己刚刷完
+  if (HWND h = other->_GetDeferredWnd())
+    PostMessage(h, WM_APP + 101, (WPARAM)(desiredAsciiMode ? 1 : 0), 0);
+}
+```
+
+snapshot 持锁瞬取，循环不持锁，`PostMessage` 异步，对已 `Deactivate` 的实例安全（其窗口先于注销被销毁，不在 snapshot 里）。
+
+## 验证计划
+
+1. 编译：`build.bat weasel release` → `output\weaselx64.dll`、`output\weasel.dll`
+2. 部署：管理员 PowerShell 覆盖 `C:\Windows\system32\weasel.dll` 与 `C:\Windows\SysWOW64\weasel.dll`（先 `.bak`）
+3. 重启 Windows Terminal / Total Commander / gvim 等 RIME 宿主进程（必须重载 DLL）
+4. 复现场景：AppIME 8s 自动切英文
+   - 期望：托盘"A"、任务栏"A"、**光标附近 LBB 立即"A"**，无需先按键；新旧光标位置都正确
+5. DebugView 关键日志：新增 `WTSF_Broadcast: ascii=1 self=12864` 以及每个接收线程的 `WTSF_OnRemoteAscii`
+6. 主功能回归：手动 Shift、Ctrl+Space、gvim `i`/`ESC`、Windows Terminal 焦点进出均正常
+
+## 拒绝的备选方案
+
+- **方向 A（im-control 枚举全部线程写 compartment）**：能补 compartment 同步，但解决不了"接收方 RIME session 仍未切"，且跨线程注入复杂、风险高
+- **方向 B（im-control 广播自定义窗口消息）**：message-only 窗口收不到顶层广播，WeaselTSF 现成无任何自定义消息入口，新增面比方向 C 大
+- **只刷 LBB 不切 RIME session**：等价于把归档修复"撤销外部变更"旧 bug 在新层面复现，明确拒绝

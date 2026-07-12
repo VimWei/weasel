@@ -147,6 +147,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _InitDisplayAttributeGuidAtom();
 
   com_ptr<ITfThreadMgr> _GetThreadMgr() { return _pThreadMgr; }
+  HWND _GetDeferredWnd() const { return _hDeferredMsgWnd; }
   void HandleUICallback(size_t* const sel,
                         size_t* const hov,
                         bool* const next,
@@ -194,6 +195,7 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   std::wstring _GetRootDir();
   BOOL _InitDeferredWindow();
   void _UninitDeferredWindow();
+  void _OnRemoteAsciiChange(bool ascii);
   static LRESULT CALLBACK _DeferredWndProc(HWND hWnd,
                                            UINT msg,
                                            WPARAM wParam,

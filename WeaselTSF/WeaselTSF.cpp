@@ -4,6 +4,7 @@
 #include <thread>
 #include <shellapi.h>
 #include <tlhelp32.h>
+#include <resource.h>
 #include "WeaselTSF.h"
 #include "CandidateList.h"
 #include "LanguageBar.h"
@@ -98,6 +99,8 @@ STDAPI WeaselTSF::Activate(ITfThreadMgr* pThreadMgr, TfClientId tfClientId) {
 }
 
 STDAPI WeaselTSF::Deactivate() {
+  Weasel_UnregisterInstance(this);
+
   m_client.EndSession();
 
   _InitTextEditSink(com_ptr<ITfDocumentMgr>());
@@ -168,6 +171,8 @@ STDAPI WeaselTSF::ActivateEx(ITfThreadMgr* pThreadMgr,
 
   _EnsureServerConnected();
 
+  Weasel_RegisterInstance(this);
+
   return S_OK;
 
 ExitError:
@@ -213,19 +218,17 @@ void WeaselTSF::_UninitThreadFocusSink() {
 
 BOOL WeaselTSF::_InitDeferredWindow() {
   HWND hWnd = CreateWindowExW(0, L"STATIC", L"WeaselTSF_DeferredUpdate", 0, 0,
-                               0, 0, 0, HWND_MESSAGE, NULL, NULL, NULL);
+                                0, 0, 0, HWND_MESSAGE, NULL, NULL, NULL);
   if (!hWnd)
     return FALSE;
   SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)this);
   SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)_DeferredWndProc);
-  SetTimer(hWnd, 1, 2000, NULL);
   _hDeferredMsgWnd = hWnd;
   return TRUE;
 }
 
 void WeaselTSF::_UninitDeferredWindow() {
   if (_hDeferredMsgWnd) {
-    KillTimer(_hDeferredMsgWnd, 1);
     DestroyWindow(_hDeferredMsgWnd);
     _hDeferredMsgWnd = NULL;
   }
@@ -243,14 +246,40 @@ LRESULT CALLBACK WeaselTSF::_DeferredWndProc(HWND hWnd,
     }
     return 0;
   }
-  if (msg == WM_TIMER && wParam == 1) {
+  if (msg == WM_APP + 101) {
     WeaselTSF* pThis = (WeaselTSF*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
     if (pThis) {
-      pThis->_ReconcileCompartment();
+      pThis->_OnRemoteAsciiChange(wParam != 0);
     }
     return 0;
   }
   return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+void WeaselTSF::_OnRemoteAsciiChange(bool ascii) {
+  WCHAR buf[160];
+  StringCchPrintfW(buf, 160, L"WTSF_OnRemoteAscii: tid=%lu ascii=%d _status=%d LBB=%p",
+                   GetCurrentThreadId(), (int)ascii, _status.ascii_mode, _pLangBarButton.p);
+  OutputDebugStringW(buf);
+
+  if (_status.ascii_mode == ascii)
+    return;
+
+  _status.ascii_mode = ascii;
+
+  if (_isToOpenClose && !_IsKeyboardOpen())
+    _SetKeyboardOpen(true);
+
+  if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
+    _EnableLanguageBar(true);
+
+  _HandleLangBarMenuSelect(ascii ? ID_WEASELTRAY_ENABLE_ASCII
+                                 : ID_WEASELTRAY_DISABLE_ASCII);
+
+  if (_pEditSessionContext)
+    m_client.ClearComposition();
+
+  _UpdateLanguageBar(_status);
 }
 
 STDMETHODIMP WeaselTSF::OnActivated(REFCLSID clsid,

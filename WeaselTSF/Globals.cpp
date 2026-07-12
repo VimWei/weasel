@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "Globals.h"
+#include <algorithm>
 
 HINSTANCE g_hInst;
 
@@ -63,3 +64,27 @@ const GUID GUID_IME_MODE_PRESERVED_KEY = {
     0xa8f7,
     0x4b42,
     {0xa9, 0x6d, 0xce, 0xc7, 0xc5, 0x0e, 0x0e, 0xae}};
+
+std::vector<WeaselTSF*> g_weaselInstances;
+
+void Weasel_RegisterInstance(WeaselTSF* p) {
+  EnterCriticalSection(&g_cs);
+  g_weaselInstances.push_back(p);
+  LeaveCriticalSection(&g_cs);
+}
+
+void Weasel_UnregisterInstance(WeaselTSF* p) {
+  EnterCriticalSection(&g_cs);
+  g_weaselInstances.erase(std::remove(g_weaselInstances.begin(),
+                                      g_weaselInstances.end(), p),
+                          g_weaselInstances.end());
+  LeaveCriticalSection(&g_cs);
+}
+
+std::vector<WeaselTSF*> Weasel_SnapshotInstances() {
+  std::vector<WeaselTSF*> snap;
+  EnterCriticalSection(&g_cs);
+  snap = g_weaselInstances;
+  LeaveCriticalSection(&g_cs);
+  return snap;
+}
