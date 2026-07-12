@@ -403,11 +403,26 @@ void WeaselTSF::_ReconcileCompartment() {
   DWORD flags;
   _GetCompartmentDWORD(flags, GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION);
   bool compartmentAscii = !(flags & TF_CONVERSIONMODE_NATIVE);
+  WCHAR buf[256];
+  if (_pLangBarButton) {
+    StringCchPrintfW(buf, 256, L"WTSF_Reconcile: _status=%d compartment=%d LBB=%p",
+                     _status.ascii_mode, compartmentAscii, _pLangBarButton.p);
+    OutputDebugStringW(buf);
+  } else {
+    StringCchPrintfW(buf, 256, L"WTSF_Reconcile: _status=%d compartment=%d LBB=NULL",
+                     _status.ascii_mode, compartmentAscii);
+    OutputDebugStringW(buf);
+  }
   if (compartmentAscii != _status.ascii_mode) {
+    OutputDebugStringW(L"WTSF_Reconcile: MISMATCH detected");
     _status.ascii_mode = compartmentAscii;
     _HandleLangBarMenuSelect(compartmentAscii
                                  ? ID_WEASELTRAY_ENABLE_ASCII
                                  : ID_WEASELTRAY_DISABLE_ASCII);
+    if (_pLangBarButton) {
+      _pLangBarButton->UpdateWeaselStatus(_status);
+      OutputDebugStringW(L"WTSF_Reconcile: UpdateWeaselStatus called");
+    }
   }
 }
 

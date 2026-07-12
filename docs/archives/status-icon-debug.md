@@ -2,11 +2,11 @@
 
 ## 问题描述
 
-使用 im-control 控制 RIME/weasel 输入法的中英文状态时，右下角 OS 指示器图标显示不正确。
+使用 im-control 控制 RIME/weasel 输入法的中英文状态时，光标所在位置的图标(即语言栏按钮`_pLangBarButton`)显示不正确。
 
 ### 涉及场景
 
-1. **AppIME**（VimReader/Windows Terminal）：自动切换中英文后，OS 指示器显示"中"而非"A"（Win10/Win11 均出错）
+1. **AppIME**（VimReader/Windows Terminal）：自动切换中英文后，语言栏按钮显示"中"而非"A"（Win10/Win11 均出错）
 2. **gvim**（Win11）：i/esc 切换模式后，OS 指示器时而正确时而错误
 3. **gvim**（Win10）：始终正常
 
@@ -17,7 +17,7 @@
 | 层级 | 位置 | 控制者 | 状态 |
 |------|------|--------|------|
 | **RIME 引擎** | 右下角通知区域托盘图标 | WeaselServer 读取 RIME 内部状态 | ✅ 始终正确 |
-| **TSF Compartment** | OS 输入法指示器（任务栏"中"/"A"） | `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION` 的 `TF_CONVERSIONMODE_NATIVE` 位 | ❌ AppIME 场景错误 |
+| **TSF Compartment** | 语言栏按钮 | `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION` 的 `TF_CONVERSIONMODE_NATIVE` 位 | ❌ AppIME 场景错误 |
 | **WeaselPanel** | 光标位置候选窗口上的状态图标 | WeaselTSF UI 组件 | 已被移除（不再自行弹图标） |
 
 > 注意：WeaselServer 托盘图标显示的是 RIME 引擎状态，OS 指示器显示的是 TSF compartment 状态，两者可能不一致。

@@ -218,12 +218,14 @@ BOOL WeaselTSF::_InitDeferredWindow() {
     return FALSE;
   SetWindowLongPtrW(hWnd, GWLP_USERDATA, (LONG_PTR)this);
   SetWindowLongPtrW(hWnd, GWLP_WNDPROC, (LONG_PTR)_DeferredWndProc);
+  SetTimer(hWnd, 1, 2000, NULL);
   _hDeferredMsgWnd = hWnd;
   return TRUE;
 }
 
 void WeaselTSF::_UninitDeferredWindow() {
   if (_hDeferredMsgWnd) {
+    KillTimer(_hDeferredMsgWnd, 1);
     DestroyWindow(_hDeferredMsgWnd);
     _hDeferredMsgWnd = NULL;
   }
@@ -236,7 +238,15 @@ LRESULT CALLBACK WeaselTSF::_DeferredWndProc(HWND hWnd,
   if (msg == WM_APP + 100) {
     WeaselTSF* pThis = (WeaselTSF*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
     if (pThis) {
+      pThis->_ReconcileCompartment();
       pThis->_UpdateLanguageBar(pThis->_status);
+    }
+    return 0;
+  }
+  if (msg == WM_TIMER && wParam == 1) {
+    WeaselTSF* pThis = (WeaselTSF*)GetWindowLongPtrW(hWnd, GWLP_USERDATA);
+    if (pThis) {
+      pThis->_ReconcileCompartment();
     }
     return 0;
   }
