@@ -196,7 +196,6 @@ class WeaselTSF : public ITfTextInputProcessorEx,
   BOOL _InitDeferredWindow();
   void _UninitDeferredWindow();
   void _OnRemoteAsciiChange(bool ascii);
-  void _RefreshStatusFromServer();
   static LRESULT CALLBACK _DeferredWndProc(HWND hWnd,
                                            UINT msg,
                                            WPARAM wParam,

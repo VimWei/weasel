@@ -339,3 +339,94 @@ _UpdateLanguageBar(_status);
 5. DebugView 关键日志：每 2 秒应见各 PID 的 `WTSF_RefreshFromServer`（待加），server 端 `_Respond` 内按 `global_ascii` 已存在的 `set_option` 广播路径命中所有 session
 6. 主功能回归：手动 Shift、Ctrl+Space、gvim i/ESC、Windows Terminal 焦点进出均正常；不做手动切换时无异常刷新（_UpdateLanguageBar 比对 _status 与 server 一致)
 7. 性能观察：每 2 秒/实例的 no-op ProcessKeyEvent(0) 流量可接受（< 4 字节 pipe transact * 3 个进程 = 总 ~12B/2s）
+
+## 三次实施（v2 部署后）：2s 定时器实测能修复但架构 ugly，绑回 v3 改造 AppME 触发机制
+
+v2（commit 31b914d）部署后实测：光标 LBB 在 ≤2 秒内同步显示"A"，问题修复。但 architecturally ugly：
+
+- 每个 WeaselTSF 实例**每 2 秒**主动发起一次 `m_client.ProcessKeyEvent(0)` + `GetResponseData` 与 WeaselServer 的 pipe 通信
+- 三个进程同时活 → 3 个 WeaselServer 端线程每 2s 唤醒一次，参与 g_api_mutex 串行化
+- 即便没有外部切换，定时器也在持续打 tick → CPU 空 burn + 不必要的 IPC round-trip
+
+用户提出更优雅的方向：**改造 AppIME，闲置时直接发送一次 Shift 按键让 RIME 自然切换**，与用户手动按 Shift 完全等价的路径——不再需要 WeaselTSF 端做任何轮询/广播兜底。
+
+### v3 核心洞察：Shift path 已经包含 LBB 刷新
+
+按键路径已确认天然刷新 LBB（`EditSession.cpp:6-16` 的 `DoEditSession`）：
+
+```cpp
+STDAPI WeaselTSF::DoEditSession(TfEditCookie ec) {
+  // ... m_client.GetResponseData(parser);  ← 拉 server 当前状态
+  _UpdateLanguageBar(_status);  ← 写本线程 compartment + UpdateWeaselStatus 刷 LBB
+  // ...
+}
+```
+
+每次 `WeaselTSF::OnKeyDown/OnKeyUp` → `_UpdateComposition(pContext)` → `RequestEditSession(this)` → `DoEditSession` 跑一遍：服务端响应 → 解析 `_status.ascii_mode` → `_UpdateLanguageBar(_status)` → `_pLangBarButton->UpdateWeaselStatus(_status)` 刷光标 LBB。
+
+也就是说**只要让 AppIME 模拟用户按一次 Shift**，前台 WeaselTSF 的 OnKeyDown→OnKeyUp 路径会：
+1. 把 Shift 按键发给 server `ProcessKeyEvent`
+2. 服务端 RIME `ascii_composer` 检测到 lone Shift release → toggle `ascii_mode` Chinese↔English
+3. 响应回包包含新 `status.ascii_mode` → `_status` 更新 → `_UpdateLanguageBar` 刷 LBB
+
+这恰好就是 vim-im-select 用户每次手动按 `i/Esc` 时的同一条路径，无需任何 WeaselTSF 端的 workaround。
+
+### v3 改动文件清单
+
+| 端 | 文件 | 改动 |
+|------|------|------|
+| AppME | `C:\Apps\VimReader\lib\utils\IME.ahk` | 新增 `IME_SetEnglishViaShift()`，用 `Send("{LShift down}") Sleep(10) Send("{LShift up}")` 模拟用户按 Shift |
+| AppME | `C:\Apps\VimReader\lib\system\AppIME.ahk` | 两处触发点（进入目标窗口 + 闲置 8s 切换）都改为调用 `IME_SetEnglishViaShift()` |
+| Weasel | `WeaselTSF/WeaselTSF.cpp` | **回退** v2 加入的 `SetTimer / KillTimer / WM_TIMER 分支 / _RefreshStatusFromServer` |
+| Weasel | `WeaselTSF/WeaselTSF.h` | **回退** `void _RefreshStatusFromServer();` 私有方法声明 |
+| Weasel | `RimeWithWeasel/RimeWithWeasel.cpp` | **回退** v2 对 `SetOption(0, "ascii_mode", ...)` 的广播改动，恢复 `if (m_global_ascii_mode && opt == "ascii_mode")` 原条件 |
+
+### 保留
+
+- **commit 8d3f406 的进程内广播**（Globals.h/cpp 的 `Weasel_*Instance` + `Compartment.cpp` 的 `WM_APP+101` 广播 + `_OnRemoteAsciiChange`）。该机制作为 defense-in-depth 保留——在没有外部 compartment 写入时是死代码不触发；若将来有其他工具（如 im-control 的 `-c` 调用）仍写前台线程 compartment，该路径仍能帮助同进程多线程同步。
+- **WeaselServer.exe /ascii** 入口（其他工具可能仍调用它，原 `global_ascii` gating 不变）。
+
+### 触发时机/条件
+
+AppME 既有的"`IME_GetMode()` 检测当前状态"逻辑保留：
+
+- **进入目标窗口**：检测若 `mode == "close" || mode == "native"`（中文/关闭），对 `close` 先 `IME_OpenKeyboard` 重开键盘，再 `IME_SetEnglishViaShift()` 发一次 Shift 切英文
+- **闲置 8 秒后**：检测若 `mode == "native"`（中文）才 `IME_SetEnglishViaShift()` 发 Shift 切英文
+
+**关键**：状态检测先行保证我们只在"当前中文"时发 Shift。RIME 的 Shift release 是无方向 toggle——若已英文时发 Shift 会被切回中文。AppME 的 `if (mode = "native")` 守卫正好避免这个反向切换。
+
+### AES 安全性原则
+
+- **OPENCLOSE handler / `_isToOpenClose` 分歧完全未触**：与 v1/v2 同
+- **WeaselTSF C++ 改动归零**：v2 客户端 inconvenient 全部回退，专有 helper GLFW/IPC 都不再新增。WeaselTSF 现状等价于 commit `8d3f406` 后的状态
+- **RIME 状态变更走 process_key 自然路径**：与用户手动按 Shift 完全一致；任何其他 app 也调不出副作用
+- **AppME 状态不变**：原有的 `IME_GetMode` / `IME_SetAlphanumeric` / `IME_SetNative` / `IME_OpenKeyboard` / `IME_SetEnglish` / `IME_SetChinese` 全部保留，其他 caller（如 `VimSimulator/SingleKeyMode.ahk`）不受影响
+- **directional safety**：AppME 触发点都用 `IME_GetMode()` 先验证当前为 native 再发 Shift，不会反向 toggle
+
+### v3 验证计划
+
+1. 重新部署 v3 weasel.dll（system32 + SysWOW64），重启所有 RIME 宿主进程
+   - **不需要重新部署 WeaselServer.exe**（v3 已回退 RimeWithWeasel，等价于 v0 的 server 状态；除非你部署过 v2 的 server，那就允许保留 v2 server，因为 v3 client 不依赖 server 端的广播改动——RIME Shift toggle 自身就会走 `process_key` 并自然更新 service 端 session 状态）
+2. 重新加载 AppME AHK 脚本，让 `IME_SetEnglishViaShift()` 生效
+3. 复现场景：AppME 8s 闲置切英文
+   - 期望：光标 LBB **立即**显示"A"（伴随 Shift keystroke 完成而刷新，无延迟）
+4. DebugView 关键日志：**无**任何 `WTSF_RefreshFromServer`、`WTSF_Broadcast`；**有**前台进程的 `WTSF_OnChange(_updating=1 asc=1)`（因 `_UpdateLanguageBar` 在守卫期间写 compartment）
+5. 主功能回归：手动按 Shift 切换、Ctrl+Space、gvim `i`/`ESC`、Windows Terminal 焦点切换均正常
+6. 副作用观察：进入目标窗口瞬间 AppME 可能发送一次 Shift，确认目标窗口在该瞬间没有"按住 Shift 左键 + 字符" 之类的 modifier 行为（WindowsTerminal / TotalCommander / IrfanView / gvim / mpv 通常都没有 Shift-alone 快捷键）
+
+### v2/v3 对比
+
+| 项 | v2 (commit 31b914d) | v3 (本轮) |
+|----|---------------------|-----------|
+| 同步机理 | 客户端 2s 定时器主动 poll server 权威态 + server 端 `/ascii` 一律 broadcast | AppME 模拟一次 Shift keystroke，走 RIME natural toggle path |
+| WeaselTSF C++ 改动 | 加 SetTimer/KillTimer/WM_TIMER/`_RefreshStatusFromServer` | 全部回退 |
+| WeaselServer IPC 改动 | `SetOption(0, "ascii_mode", ...)` 一律 broadcast | 回退到 `global_ascii` gating |
+| IPC 开销 | 每 2s/实例一次 ProcessKeyEvent(0) round-trip | 零（只有在 AppME 真正触发时才有一次 Shift keystroke） |
+| 刷新延迟 | ≤2 秒 | 立即（一个 keystroke 周期 ~10ms） |
+| 架构优雅 | 丑陋：轮询一个本不该轮询的状态 | 干净：复用自然路径 |
+
+### v3 拒绝的备选（与 v1/v2 略有不同）
+
+- **不调 `WeaselServer.exe /ascii`**：v3 不再需要 server 端广播——前台 WeaselTSF 的 OnKeyDown 已经把 server session 状态 toggle 完成。其它进程 session 自然保持各自状态，互不干扰（vim-im-select 用户也是这样切前台）
+- **不用 Send `{Shift}` 而用 Send `{LShift}`**：RIME `ascii_composer` 默认配置 `Shift_L: inline_ascii`（lone release toggle）、`Shift_R: commit_code`（差异行为），为保险起见发 Left Shift；若用户改了 RIME 配置使 Shift_L 行为不同则需调整 AHK 脚本
+- **保持 `IME_GetMode` 鉴别后台仍调 im-control**：现有 `ime-control -g` 是轻量只读 (`-g get-keyboard`)，不预写 compartment，状态用完后立即卸载；属可接受开销；如要彻底远离 im-control 可考虑直接读 `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`，但那又得走 im-control 的注入 hook 即必要性不变
