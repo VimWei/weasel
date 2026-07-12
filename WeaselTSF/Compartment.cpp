@@ -279,35 +279,36 @@ HRESULT WeaselTSF::_HandleCompartment(REFGUID guidCompartment) {
       DWORD ocFlags = 0;
       _GetCompartmentDWORD(ocFlags, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE);
       BOOL keyboardJustClosed = (ocFlags == 0);
+      DWORD convFlags = 0;
+      bool desiredAscii = false;
+      bool haveConv = SUCCEEDED(_GetCompartmentDWORD(convFlags,
+          GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION));
+      if (haveConv)
+        desiredAscii = !(convFlags & TF_CONVERSIONMODE_NATIVE);
       {
         WCHAR buf[256];
         StringCchPrintfW(buf, 256,
-            L"WTSF_OPENCLOSE else: oc=%d justClosed=%d _stat=%d LBB=%p",
-            (int)ocFlags, (int)keyboardJustClosed,
+            L"WTSF_OPENCLOSE else: oc=%d justClosed=%d convAscii=%d _stat=%d LBB=%p",
+            (int)ocFlags, (int)keyboardJustClosed, (int)desiredAscii,
             (int)_status.ascii_mode, _pLangBarButton.p);
         OutputDebugStringW(buf);
       }
       _SetKeyboardOpen(true);
       if (_pLangBarButton && _pLangBarButton->IsLangBarDisabled())
         _EnableLanguageBar(true);
-      DWORD convFlags;
-      if (SUCCEEDED(_GetCompartmentDWORD(convFlags,
-                                          GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION))) {
-        bool desiredAscii = !(convFlags & TF_CONVERSIONMODE_NATIVE);
-        if (keyboardJustClosed && !desiredAscii) {
-          OutputDebugStringW(L"WTSF_OPENCLOSE else: FORCE English branch");
-          _status.ascii_mode = true;
-          _HandleLangBarMenuSelect(ID_WEASELTRAY_ENABLE_ASCII);
-          if (_pEditSessionContext)
-            m_client.ClearComposition();
-          _UpdateLanguageBar(_status);
-        } else if (desiredAscii != _status.ascii_mode) {
-          _status.ascii_mode = desiredAscii;
-          if (_pEditSessionContext)
-            m_client.ClearComposition();
-          if (_pLangBarButton)
-            _pLangBarButton->UpdateWeaselStatus(_status);
-        }
+      if (keyboardJustClosed && !_status.ascii_mode) {
+        OutputDebugStringW(L"WTSF_OPENCLOSE else: FORCE English branch (gvim Esc, local _status is Chinese)");
+        _status.ascii_mode = true;
+        _HandleLangBarMenuSelect(ID_WEASELTRAY_ENABLE_ASCII);
+        if (_pEditSessionContext)
+          m_client.ClearComposition();
+        _UpdateLanguageBar(_status);
+      } else if (haveConv && desiredAscii != _status.ascii_mode) {
+        _status.ascii_mode = desiredAscii;
+        if (_pEditSessionContext)
+          m_client.ClearComposition();
+        if (_pLangBarButton)
+          _pLangBarButton->UpdateWeaselStatus(_status);
       }
     }
   } else if (IsEqualGUID(guidCompartment,

@@ -976,3 +976,144 @@ v8 用 `!_IsKeyboardOpen()` 判 `keyboardJustClosed`，该函数读当前 compar
 - **`FORCE English branch` 是否出现**：若 `keyboardJustClosed=1` 且 `desiredAscii=0`（Chinese），应进入 force 分支。若 force 分支进入但 LBB 仍"中"，说明 `_UpdateLanguageBar` / `_HandleLangBarMenuSelect` 在别处又被覆盖
 
 抓到日志后告诉我，我接着定位。
+
+## 十次实施（v9 trace 部署后）：日志揭示 v8 force 条件错——v10 改判 _status 而非 compartment
+
+### v9 日志（`docs/debugview/VIMELNUC05.log`）关键事件
+
+gvim 进程 PID 13996 每次 OPENCLOSE OnChange 时调到 else 分支：
+
+| 行 | t | oc | justClosed | _stat |
+|----|---|-----|-----------|-------|
+| 40 | 7.47  | 0 | 1 | **0** | ← 失败场景(停 2s+ Esc)
+| 47 | 8.91  | 1 | 0 | 1 |
+| 52 | 9.67  | 0 | 1 | **0** |
+| 58 | 10.61 | 1 | 0 | 1 |
+| 63 | 11.55 | 0 | 1 | **0** |
+| 68 | 12.40 | 1 | 0 | 1 |
+| 79 | **14.53** | 0 | 1 | **1** | ← 成功场景(快速 Esc)
+| 83 | 15.13 | 1 | 0 | 1 |
+| 89 | 16.16 | 0 | 1 | **0** |
+| 其他 | ... | 0 | 1 | **0** | (5+ 次失败) |
+
+**关键观察**：
+
+1. **OPENCLOSE OnChange 在 Win11 上确实进入了 else 分支**——之前"Win11 无闪烁证明 OnChange 未触发"假设错了
+2. **`FORCE English branch` 日志从未出现**——v8 force 分支从未触发
+3. 失败行（`_stat=0` 进入 else 分支）与世界成功行（`_stat=1` 进入）的差别只在 **`_status.ascii_mode` 初始值**
+
+### v8 force 条件的逻辑错误
+
+原 v8 条件：
+```cpp
+if (keyboardJustClosed && !desiredAscii)   // desiredAscii = 从 CONVERSION compartment 读出
+```
+
+V9 加 `convAscii` 字段到日志后，重建时序分析：
+
+- **停 2s+ 后 Esc 场景（失败）**：
+  - 中文输入期间 RIME session 是 chinese，CONVERSION compartment = NATIVE on，`_status.ascii_mode=false`
+  - 用户停 2s+。RIME server-side `ascii_composer` 可能自动 commit + 切回 ascii=true（RIME 默认 schema 行为），server 写 CONVERSION compartment = ~NATIVE（English）。**但 client 没 ProcessKeyEvent 触发 DoEditSession 网络，`_status.ascii_mode` 还是 `false`（陈旧）**
+  - gvim Esc：调 im-control `-c alphanumeric`。im-control 读 CONVERSION compartment = ~NATIVE，请求也是 ~NATIVE → `newMode == oldMode` 跳过 SetValue → **没有 OnChange(CONVERSION) 触发**
+  - gvim 同步写 OPENCLOSE=0 → 触发 OnChange(OPENCLOSE) → else 分支
+  - v9 日志显示 `oc=0 justClosed=1 _stat=0`
+  - 此时 `convFlags=~NATIVE, desiredAscii=true`
+  - v8 条件 `keyboardJustClosed && !desiredAscii` = `true && false` = **false → 不进 force** ❌
+  - 进 else if `desiredAscii(true) != _status.ascii_mode(false→0)` → mismatch 分支设 `_status=true`，但**只 _pLangBarButton->UpdateWeaselStatus 不 _HandleLangBarMenuSelect 不通知 RIME**
+  - 但 _status 已设 true，LBB 应已被刷……
+
+  **但用户观察到 LBB 是"中"**——所以 UpdateWeaselStatus 不知为什么不刷或被刷回。
+
+- **快速 Esc 场景（成功）**：
+  - 用户 Shift 切中 + 立即 Esc，RIME session 还是 chinese（没机会切回 ascii），server `_status` 仍是 false... 但 v9 日志显示 `_stat=1`
+
+  这里不一致！v9 日志行 79 `_stat=1`——意味进入 OPENCLOSE OnChange 之前 _status 已经是 false→true 切换。可能是因为前面中文输入时按键 = 通过 DoEditSession 通过 _UpdateLanguageBar 切了 _status 一次。
+
+### 真正根因：v8 进 mismatch 分支不通知 RIME/不调 _HandleLangBarMenuSelect
+
+(v6 的 mismatch 分支也只刷 LBB，不通知 server——是合理的，因 mismatch 通知已通过 im-control 完成)。但是 v8/v6 的 mismatch 分支在 OPENCLOSE handler else 中只会被 v9 的 `_stat=0` 进入，并在 _UpdateLanguageBar 之后……但 _status.ascii_mode 也是 false→true 已经做了？为什么 LBB 还是中文？
+
+**重新分析: v9 没在 mismatch 分支加日志——我们不知道是否走了 mismatch。** 但行 40 `_stat=0, justClosed=1` 日志看出 force 没进。如果 `desiredAscii=true`（case 假设），mismatch 分支应该进：`desiredAscii(true) != _status.ascii(false)` 真 → 设 _status=true + UpdateWeaselStatus。**UpdateWeaselStatus 应该刷 LBB 为 A**！
+
+除非 desiredAscii 不是 true！我加的 v9 日志没显示 desiredAscii——v9 trace 不够完整。但 v10 日志会显示。
+
+让我假设前面分析错——另一种可能：当 OPENCLOSE 关闭时，CONVERSION compartment 也是 NATIVE on（Chinese），desiredAscii=false。v8 条件应该进——为什么没进？
+
+回看行 40：日志是 v9 trace (没 convAscii 字段)。让我重新看 v8 条件：
+```cpp
+if (keyboardJustClosed && !desiredAscii) {
+```
+而 `_GetCompartmentDWORD(convFlags,...)` 失败时 desiredAscii 会是默认值吗？变量声明 `bool desiredAscii` —— 如果 SUCCEEDED 失败，整个 if 分支不进，doesn't reach force evaluation。我刚才 v10 改进代码让 desiredAscii 在外初始化为 false，即"读 compartment 失败时默认 false（Chinese）"，但仍走 mismatch 分支判 `haveConv &&`。
+
+让我重新看 v8 代码 v9 修复变体：
+```cpp
+DWORD convFlags;
+if (SUCCEEDED(_GetCompartmentDWORD(convFlags, ...))) {
+    bool desiredAscii = !(convFlags & TF_CONVERSIONMODE_NATIVE);
+    if (keyboardJustClosed && !desiredAscii) { /*force*/ }
+    else if (desiredAscii != _status.ascii_mode) { /*mismatch*/ }
+}
+```
+如果 SUCCEEDED 失败，整 block 跳过——无 _status 更新，无 _UpdateLanguageBar。**但日志显示 else 分支被调到——proving compartment read 成功**。
+
+所以 getCompartment 成功，desiredAscii 有真值。**为什么 force 没触发？**
+
+唯一解释：`desiredAscii=true`（compartment 已是 ~NATIVE 英文）。v10 trace 会让用户重测看 `convAscii` 字段。
+
+### v10 改动：force 条件改判 `_status` 而非 compartment
+
+不管 CONVERSION compartment 是什么，**gvim Esc 时若 client `_status.ascii_mode` 是中文，就 force 切英文**：
+
+```cpp
+if (keyboardJustClosed && !_status.ascii_mode) {
+    // Force English regardless of compartment state — compartment may
+    // already be ~NATIVE because RIME idle auto-toggle, but client
+    // _status is stale (false).送 ENABLE_ASCII 让 server 切 English
+    // (idempotent if already English)，写 ~NATIVE 同步 compartment，
+    // 刷 LBB。
+    ...
+}
+```
+
+为何这对**：
+- **失败场景** Esc 时 `_status=0`（still Chinese from stale）：force 触发→切英文→LBB"A" ✓
+- **成功场景** Esc 时 `_status=1`（已 English via 前一轮按键）：`!_status.ascii_mode` = `!true` = false → 不进 force → 但 _status 已英文，`else if (desiredAscii != _status)` 也不进（true==true）→ 无操作 ✓
+- **Win10 if 分支不受影响**：if (_isToOpenClose) 走原路径，OK
+- **正常 OPENCLOSE 触发但不在 gvim Esc 场景**（比如 Ctrl+Space 关 IME）：OpenClose 时若 `_status=0`（Chinese）则切英文——这对 Ctrl+Space 关 English→Chinese 的场景可能多切一次，但…
+
+Wait——问题：如果用户 Ctrl+Space 关 IME 时 _status=0 是合法的（user 主动关 IME 时正想用 English），我们的 force 把它切回英文 RIME session—可能打乱。
+
+但 v10 force 条件 `keyboardJustClosed && !_status.ascii_mode` 在用户 Ctrl+Space 从 Chinese 关 IME 时：
+- _status=0 (Chinese before close)
+- keyboardJustClosed=true (OPENCLOSE=0)
+- ⇒ force goes — 切 English OK
+
+这是 830eb55 之前 blind toggle 的同向行为（也与实际用户意图一致：关 IME = 不打中文）。所以**v10 不破坏 Ctrl+Space**。
+
+加日志确认 convAscii 真实的 _status → force 是否进：v10 trace 加 `convAscii` 字段，并改 force 加注释日志，让用户重测看 convAscii + FORCE 字段。
+
+### v10 改动文件清单
+
+| 仓库 | 文件 | 改动 |
+|------|------|------|
+| weasel | `WeaselTSF/Compartment.cpp` | OPENCLOSE else 分支：force 条件改判 `!_status.ascii_mode` 而非 `!desiredAscii`；日志加 `convAscii` 字段；force 日志加 gvim Esc 标注 |
+
+### v10 部署验证
+
+1. 编译：`build.bat weasel release`
+2. 部署：覆盖 system32 / SysWOW64 的 weasel.dll
+3. 重启 gvim.exe (Win11)
+4. 复测场景 4：`i` → Shift 切中 → 输入字符 → 停 2-3s → Esc → 应显示 A（之前是"中"）
+5. 日志保存到 `VIMELNUC06.log`（如果仍失败）：
+   - 看 `convAscii` 真值
+   - 看 `FORCE English branch (gvim Esc)` 是否触发
+
+### v10 时序分析
+
+| 场景 | 时序 | v10 结果 |
+|------|------|---------|
+| 停 2s+ Esc（失败已知） | _status=0 进入 else → `!_status.ascii_mode=true` + `keyboardJustClosed=true` → force 进，_status→true, server ENABLE_ASCII, _UpdateLanguageBar, LBB"A" ✓ |
+| 快速 Esc（成功） | _status=1 进入 else → `!_status.ascii_mode=false` → 不进 force → else if: `desiredAscii (true) != _status.ascii(true)` 不真（true==true）→ 无操作 ✓ |
+| Ctrl+Space 从 Chinese 关 IME | _status=0, oc=0, justClosed=1 → force 切 English（原 830eb55 也 blind-toggle 切到 Chinese，v10 切到 English，更符合用户意图） ✓ |
+| Ctrl+Space 从 English 关 IME | _status=1, oc=0, justClosed=1 → 不进 force ✓ |
+| 英文输入 Esc | _status=1 进入 else → 不进 force ✓ |
