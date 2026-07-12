@@ -429,4 +429,61 @@ AppME 既有的"`IME_GetMode()` 检测当前状态"逻辑保留：
 
 - **不调 `WeaselServer.exe /ascii`**：v3 不再需要 server 端广播——前台 WeaselTSF 的 OnKeyDown 已经把 server session 状态 toggle 完成。其它进程 session 自然保持各自状态，互不干扰（vim-im-select 用户也是这样切前台）
 - **不用 Send `{Shift}` 而用 Send `{LShift}`**：RIME `ascii_composer` 默认配置 `Shift_L: inline_ascii`（lone release toggle）、`Shift_R: commit_code`（差异行为），为保险起见发 Left Shift；若用户改了 RIME 配置使 Shift_L 行为不同则需调整 AHK 脚本
-- **保持 `IME_GetMode` 鉴别后台仍调 im-control**：现有 `ime-control -g` 是轻量只读 (`-g get-keyboard`)，不预写 compartment，状态用完后立即卸载；属可接受开销；如要彻底远离 im-control 可考虑直接读 `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`，但那又得走 im-control 的注入 hook 即必要性不变
+- **保持 `IME_GetMode` 鉴别后台仍调 im-control**：现有 `ime-control -g` 是轻量只读 (`-g get-keyboard`)，不预写 compartment，状态用完成后立即卸载；属可接受开销；如要彻底远离 im-control 可考虑直接读 `GUID_COMPARTMENT_KEYBOARD_INPUTMODE_CONVERSION`，但那又得走 im-control 的注入 hook 即必要性不变
+
+## 四次实施（v3 部署后）：恢复原始轻量 `_ReconcileCompartment` 2s 定时器
+
+v3 部署后实测结果：
+
+| 场景 | Win10 | Win11 |
+|------|------|-------|
+| AppME 闲置 8s 切换 | ✅ | ✅ |
+| gvim 进出 insert/command | ✅ | ❌ 不稳定，时好时坏 |
+
+Win11 gvim 在 commit `830eb55` 时是正常的，到 v3 (`f65d4b8`) 出现回归。
+
+**根因**：`830eb55` 的 2s `SetTimer` 调的是**纯本地 `_ReconcileCompartment`**——只比对 `_status` 与本线程 compartment，零 IPC、零 broadcast。它在 Win11 gvim 偶发 race（im-control 的外部 CONVERSION compartment 写入偶尔没正常触发 OnChange）时起兜底作用：2s 内必然有一次本地比对并刷新 LBB。
+
+commit `8d3f406` 在引入进程内广播时**误删了这个轻量 timer**——本是改造而非替换，结果把它和 v2 后来加的重量 `_RefreshStatusFromServer` 一起认为是"2s 定时器"了。f65d4b8 又只回退 v2，不知这个原始轻量 timer 才是 Win11 gvim 的安全网，导致回归。
+
+### 两种 2s 定时器的关键区分
+
+| 项 | 原 `_ReconcileCompartment` timer (`830eb55`) | `_RefreshStatusFromServer` timer (v2 / commit 31b914d) |
+|----|---------------------------------------------|--------------------------------------------------------|
+| 比对内容 | 本地 `_status` vs 本线程 compartment | server 端权威态 |
+| 是否 IPC | **否**——纯本地比对 | 是——每次 `ProcessKeyEvent(0)` 一轮 IPC |
+| 触发 `_UpdateLanguageBar` | 仅在 mismatch 时 | 总是 |
+| 架构意义 | 防漏检 OnChange 的安全网 | 跨进程拉权威态的主路径 |
+| Ugly? | 不丑，常驻不留痕 | 丑——空载也持续 burn IPC |
+
+用户之前说"2s 定时器 ugly"，是指后者——v2 的 server 轮询。原 `_ReconcileCompartment` 完全不同,它本身在 830eb55 就存在,而且是 Win11 gvim 正常工作的必要条件。
+
+### v4 改动
+
+`WeaselTSF/WeaselTSF.cpp`：
+- `_InitDeferredWindow`：恢复 `SetTimer(hWnd, 1, 2000, NULL)`
+- `_UninitDeferredWindow`：恢复 `KillTimer(_hDeferredMsgWnd, 1)`
+- `_DeferredWndProc`：恢复 `WM_TIMER && wParam == 1` 分支调 `pThis->_ReconcileCompartment()`
+
+这是 commit `830eb55` 原始 `_DeferredWndProc` 的精确还原。v1 的进程内广播(`WM_APP+101` + `_OnRemoteAsciiChange` + `Weasel_*Instance`)保留作 defense-in-depth。`_RefreshStatusFromServer` 不再回来。
+
+### v3 AppME Shift 与 v4 timer 正交互补
+
+| 场景 | 谁负责 |
+|------|---------|
+| AppME 闲置 8s（无 keystroke、无 focus） | v3 AppME Send Shift（前台 OnKeyDown 主路径）× 同进程多线程兜底（v1 广播如适用） |
+| gvim i/Esc（vim-im-select 写外部 compartment） | CONVERSION OnChange 主路径 × 2s `_ReconcileCompartment` timer（v4）防漏检 |
+| 任何模式下 race 导致 OnChange 漏 | 2s timer 兜底 |
+
+两者作用域不重叠——timer 解决同进程漏检，Shift 解决跨进程闲置。互不破坏（都幂等）。
+
+### v4 验证计划
+
+1. 编译：`build.bat weasel release`
+2. 部署：覆盖 system32 / SysWOW64 的 weasel.dll；**WeaselServer.exe 无需重新部署**（v4 未改 server 端）
+3. 重启所有 RIME 宿主进程
+4. 场景复现：
+   - AppME 闲置 8s（v3 已修，v4 应继续 OK）
+   - gvim Win10 i/Esc 模式切换（v3 已 OK，v4 应继续 OK）
+   - gvim Win11 i/Esc 模式切换（v3 报时好时坏，v4 应稳定 OK——2s 内必刷一次）
+5. 主功能回归：手动 Shift、Ctrl+Space、Windows Terminal 焦点切换均正常
